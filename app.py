@@ -3,7 +3,7 @@ import yfinance as yf
 import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
-import pandas_ta as ta
+import ta as ta_lib
 from datetime import datetime, timedelta
 import time
 
@@ -92,27 +92,27 @@ def fetch_history(ticker: str, period: str, interval: str) -> pd.DataFrame:
 
     df.dropna(inplace=True)
 
+    close = df["Close"].squeeze()
+
     # Moving averages
-    df["SMA20"] = ta.sma(df["Close"], length=20)
-    df["SMA50"] = ta.sma(df["Close"], length=50)
-    df["EMA20"] = ta.ema(df["Close"], length=20)
+    df["SMA20"] = ta_lib.trend.SMAIndicator(close, window=20).sma_indicator()
+    df["SMA50"] = ta_lib.trend.SMAIndicator(close, window=50).sma_indicator()
+    df["EMA20"] = ta_lib.trend.EMAIndicator(close, window=20).ema_indicator()
 
     # Bollinger Bands
-    bb = ta.bbands(df["Close"], length=20, std=2)
-    if bb is not None:
-        df["BB_upper"] = bb.iloc[:, 0]
-        df["BB_mid"]   = bb.iloc[:, 1]
-        df["BB_lower"] = bb.iloc[:, 2]
+    bb = ta_lib.volatility.BollingerBands(close, window=20, window_dev=2)
+    df["BB_upper"] = bb.bollinger_hband()
+    df["BB_mid"]   = bb.bollinger_mavg()
+    df["BB_lower"] = bb.bollinger_lband()
 
     # RSI
-    df["RSI"] = ta.rsi(df["Close"], length=14)
+    df["RSI"] = ta_lib.momentum.RSIIndicator(close, window=14).rsi()
 
     # MACD
-    macd = ta.macd(df["Close"], fast=12, slow=26, signal=9)
-    if macd is not None:
-        df["MACD"]        = macd.iloc[:, 0]
-        df["MACD_hist"]   = macd.iloc[:, 1]
-        df["MACD_signal"] = macd.iloc[:, 2]
+    macd = ta_lib.trend.MACD(close, window_slow=26, window_fast=12, window_sign=9)
+    df["MACD"]        = macd.macd()
+    df["MACD_hist"]   = macd.macd_diff()
+    df["MACD_signal"] = macd.macd_signal()
 
     return df
 
