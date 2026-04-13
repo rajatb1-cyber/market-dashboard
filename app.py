@@ -65,12 +65,48 @@ CRYPTO = {
     "SOL":      "SOL-USD",
 }
 
-POPULAR_TICKERS = [
-    "^GSPC", "^IXIC", "^DJI", "^RUT",
-    "AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA",
-    "SPY", "QQQ", "GLD", "BTC-USD", "ETH-USD",
-    "^TNX", "GC=F", "CL=F", "EURUSD=X",
-]
+# Flat name→ticker map for the dropdown (grouped by category)
+TICKER_OPTIONS = {
+    # Indices
+    "S&P 500 (^GSPC)":      "^GSPC",
+    "NASDAQ (^IXIC)":       "^IXIC",
+    "Dow Jones (^DJI)":     "^DJI",
+    "Russell 2000 (^RUT)":  "^RUT",
+    "VIX (^VIX)":           "^VIX",
+    # US Bonds
+    "US 2Y Treasury (^IRX)":  "^IRX",
+    "US 5Y Treasury (^FVX)":  "^FVX",
+    "US 10Y Treasury (^TNX)": "^TNX",
+    "US 30Y Treasury (^TYX)": "^TYX",
+    # Commodities
+    "Gold (GC=F)":         "GC=F",
+    "Silver (SI=F)":       "SI=F",
+    "WTI Oil (CL=F)":      "CL=F",
+    "Brent Crude (BZ=F)":  "BZ=F",
+    "Nat Gas (NG=F)":      "NG=F",
+    # Currencies
+    "DXY Dollar Index":    "DX-Y.NYB",
+    "EUR/USD":             "EURUSD=X",
+    "GBP/USD":             "GBPUSD=X",
+    "USD/JPY":             "JPY=X",
+    "USD/CNY":             "CNY=X",
+    # Crypto
+    "Bitcoin (BTC-USD)":   "BTC-USD",
+    "Ethereum (ETH-USD)":  "ETH-USD",
+    "BNB (BNB-USD)":       "BNB-USD",
+    "Solana (SOL-USD)":    "SOL-USD",
+    # Stocks & ETFs
+    "Apple (AAPL)":        "AAPL",
+    "Microsoft (MSFT)":    "MSFT",
+    "Google (GOOGL)":      "GOOGL",
+    "Amazon (AMZN)":       "AMZN",
+    "NVIDIA (NVDA)":       "NVDA",
+    "Meta (META)":         "META",
+    "Tesla (TSLA)":        "TSLA",
+    "S&P 500 ETF (SPY)":   "SPY",
+    "NASDAQ ETF (QQQ)":    "QQQ",
+    "Gold ETF (GLD)":      "GLD",
+}
 
 TIMEFRAMES = {
     "1 Day":    ("1d",  "5m"),
@@ -348,7 +384,10 @@ def render_sidebar():
     custom = st.sidebar.text_input(
         "Custom ticker", placeholder="e.g. AAPL, ^TNX, GC=F"
     ).upper().strip()
-    selected = st.sidebar.selectbox("Select ticker", POPULAR_TICKERS)
+    selected_label = st.sidebar.selectbox(
+        "Select ticker", list(TICKER_OPTIONS.keys())
+    )
+    selected = TICKER_OPTIONS[selected_label]
     ticker = custom if custom else selected
 
     timeframe = st.sidebar.selectbox("Timeframe", list(TIMEFRAMES.keys()), index=2)
