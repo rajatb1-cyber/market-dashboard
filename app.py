@@ -17,10 +17,14 @@ st.set_page_config(
 )
 
 # ── Finnhub client ─────────────────────────────────────────────────────────────
-@st.cache_resource
 def get_finnhub():
-    key = st.secrets.get("FINNHUB_KEY", "")
-    return finnhub.Client(api_key=key) if key else None
+    try:
+        key = st.secrets["FINNHUB_KEY"]
+        if key:
+            return finnhub.Client(api_key=key)
+    except Exception:
+        pass
+    return None
 
 # ── Market data definitions ────────────────────────────────────────────────────
 INDICES = {
