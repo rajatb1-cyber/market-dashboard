@@ -16,6 +16,88 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
+# ── Premium fintech CSS ────────────────────────────────────────────────────────
+st.markdown("""
+<style>
+/* ── Global ── */
+html, body, [data-testid="stAppViewContainer"] {
+    background-color: #FFFFFF;
+    font-family: 'Inter', 'Segoe UI', sans-serif;
+}
+
+/* ── Top header bar ── */
+[data-testid="stHeader"] { background-color: #FFFFFF; border-bottom: 1px solid #E2E8F0; }
+
+/* ── Sidebar ── */
+[data-testid="stSidebar"] {
+    background-color: #F7F9FC;
+    border-right: 1px solid #E2E8F0;
+}
+[data-testid="stSidebar"] h1 {
+    color: #1B2B4B;
+    font-size: 1.2rem;
+    font-weight: 700;
+    letter-spacing: -0.3px;
+}
+
+/* ── Metric cards ── */
+[data-testid="metric-container"] {
+    background: #FFFFFF;
+    border: 1px solid #E8EDF5;
+    border-radius: 10px;
+    padding: 14px 16px;
+    box-shadow: 0 1px 4px rgba(0,0,0,0.05);
+    transition: box-shadow 0.2s;
+}
+[data-testid="metric-container"]:hover {
+    box-shadow: 0 4px 12px rgba(37,99,235,0.10);
+    border-color: #BFDBFE;
+}
+[data-testid="stMetricLabel"] {
+    font-size: 0.72rem !important;
+    font-weight: 600 !important;
+    letter-spacing: 0.4px !important;
+    text-transform: uppercase !important;
+    color: #64748B !important;
+}
+[data-testid="stMetricValue"] {
+    font-size: 1.18rem !important;
+    font-weight: 700 !important;
+    color: #1A202C !important;
+    letter-spacing: -0.3px !important;
+}
+
+/* ── Section headings ── */
+h2, h3 { color: #1B2B4B !important; font-weight: 700 !important; letter-spacing: -0.4px; }
+
+/* ── Dividers ── */
+hr { border: none; border-top: 1px solid #E2E8F0 !important; margin: 0.5rem 0; }
+
+/* ── Expanders ── */
+[data-testid="stExpander"] {
+    border: 1px solid #E2E8F0 !important;
+    border-radius: 10px !important;
+    background: #FAFBFD !important;
+}
+
+/* ── Dataframe ── */
+[data-testid="stDataFrame"] { border-radius: 10px; overflow: hidden; }
+
+/* ── Spinner ── */
+[data-testid="stSpinner"] { color: #2563EB; }
+
+/* ── Selectbox & inputs ── */
+[data-testid="stSelectbox"] > div,
+[data-testid="stTextInput"] > div > div {
+    border-radius: 8px !important;
+    border-color: #E2E8F0 !important;
+}
+
+/* ── Positive delta green, negative red ── */
+[data-testid="stMetricDelta"] > div { font-weight: 600 !important; font-size: 0.82rem !important; }
+</style>
+""", unsafe_allow_html=True)
+
 # ── Finnhub client ─────────────────────────────────────────────────────────────
 def get_finnhub():
     try:
@@ -119,16 +201,27 @@ TIMEFRAMES = {
 }
 
 COLORS = {
-    "up":          "#26A69A",
-    "down":        "#EF5350",
-    "volume_up":   "rgba(38,166,154,0.4)",
-    "volume_down": "rgba(239,83,80,0.4)",
-    "sma20":       "#FF9800",
-    "sma50":       "#2196F3",
-    "ema20":       "#CE93D8",
-    "bb_upper":    "rgba(100,181,246,0.7)",
-    "bb_lower":    "rgba(100,181,246,0.7)",
-    "bb_fill":     "rgba(100,181,246,0.07)",
+    "up":          "#059669",
+    "down":        "#DC2626",
+    "volume_up":   "rgba(5,150,105,0.25)",
+    "volume_down": "rgba(220,38,38,0.25)",
+    "sma20":       "#D97706",
+    "sma50":       "#2563EB",
+    "ema20":       "#7C3AED",
+    "bb_upper":    "rgba(37,99,235,0.5)",
+    "bb_lower":    "rgba(37,99,235,0.5)",
+    "bb_fill":     "rgba(37,99,235,0.04)",
+    # chart backgrounds
+    "paper":       "#FFFFFF",
+    "plot":        "#FAFBFD",
+    "grid":        "#E8EDF5",
+    "text":        "#1A202C",
+    "spike":       "#94A3B8",
+    # indicator lines
+    "rsi_line":    "#2563EB",
+    "rsi_fill":    "rgba(37,99,235,0.06)",
+    "macd_line":   "#2563EB",
+    "signal_line": "#D97706",
 }
 
 # ── Data helpers ───────────────────────────────────────────────────────────────
@@ -267,20 +360,23 @@ def build_main_chart(df, ticker, overlays, show_volume):
         fig.update_yaxes(title_text="Volume", row=2, col=1, tickfont=dict(size=10))
 
     fig.update_layout(
-        title=dict(text=ticker, font=dict(size=18)),
+        title=dict(text=ticker, font=dict(size=18, color=COLORS["text"], family="Inter, Segoe UI, sans-serif")),
         xaxis_rangeslider_visible=False,
         height=480,
-        paper_bgcolor="#0E1117", plot_bgcolor="#161B22",
-        font=dict(color="#FAFAFA"),
+        paper_bgcolor=COLORS["paper"], plot_bgcolor=COLORS["plot"],
+        font=dict(color=COLORS["text"], family="Inter, Segoe UI, sans-serif"),
         legend=dict(orientation="h", yanchor="bottom", y=1.02,
-                    xanchor="right", x=1, font=dict(size=11)),
+                    xanchor="right", x=1, font=dict(size=11),
+                    bgcolor="rgba(255,255,255,0.85)", bordercolor="#E2E8F0", borderwidth=1),
         margin=dict(l=10, r=10, t=50, b=10),
         hovermode="x unified",
+        hoverlabel=dict(bgcolor="#FFFFFF", bordercolor="#E2E8F0",
+                        font=dict(color="#1A202C", size=12)),
     )
-    fig.update_xaxes(gridcolor="#2D333B", zeroline=False,
-                     showspikes=True, spikecolor="#555", spikethickness=1)
-    fig.update_yaxes(gridcolor="#2D333B", zeroline=False,
-                     showspikes=True, spikecolor="#555", spikethickness=1)
+    fig.update_xaxes(gridcolor=COLORS["grid"], zeroline=False, linecolor="#E2E8F0",
+                     showspikes=True, spikecolor=COLORS["spike"], spikethickness=1)
+    fig.update_yaxes(gridcolor=COLORS["grid"], zeroline=False, linecolor="#E2E8F0",
+                     showspikes=True, spikecolor=COLORS["spike"], spikethickness=1)
     return fig
 
 
@@ -288,25 +384,26 @@ def build_rsi_chart(df):
     fig = go.Figure()
     if "RSI" not in df:
         return fig
-    fig.add_hrect(y0=70, y1=100, fillcolor="rgba(239,83,80,0.1)", line_width=0,
+    fig.add_hrect(y0=70, y1=100, fillcolor="rgba(220,38,38,0.06)", line_width=0,
                   annotation_text="Overbought", annotation_position="top left",
-                  annotation=dict(font_color="#EF5350", font_size=11))
-    fig.add_hrect(y0=0, y1=30, fillcolor="rgba(38,166,154,0.1)", line_width=0,
+                  annotation=dict(font_color="#DC2626", font_size=11))
+    fig.add_hrect(y0=0, y1=30, fillcolor="rgba(5,150,105,0.06)", line_width=0,
                   annotation_text="Oversold", annotation_position="bottom left",
-                  annotation=dict(font_color="#26A69A", font_size=11))
-    fig.add_hline(y=70, line_dash="dash", line_color="#EF5350", line_width=1)
-    fig.add_hline(y=30, line_dash="dash", line_color="#26A69A", line_width=1)
-    fig.add_hline(y=50, line_dash="dot",  line_color="#666",    line_width=1)
+                  annotation=dict(font_color="#059669", font_size=11))
+    fig.add_hline(y=70, line_dash="dash", line_color="#DC2626", line_width=1)
+    fig.add_hline(y=30, line_dash="dash", line_color="#059669", line_width=1)
+    fig.add_hline(y=50, line_dash="dot",  line_color="#CBD5E1", line_width=1)
     fig.add_trace(go.Scatter(x=df.index, y=df["RSI"], name="RSI(14)",
-        line=dict(color="#00D4FF", width=2),
-        fill="tozeroy", fillcolor="rgba(0,212,255,0.05)"))
+        line=dict(color=COLORS["rsi_line"], width=2),
+        fill="tozeroy", fillcolor=COLORS["rsi_fill"]))
     fig.update_layout(
-        title=dict(text="RSI (14)", font=dict(size=14)),
-        height=220, paper_bgcolor="#0E1117", plot_bgcolor="#161B22",
-        font=dict(color="#FAFAFA"), margin=dict(l=10, r=10, t=40, b=10),
-        yaxis=dict(range=[0, 100], gridcolor="#2D333B", zeroline=False),
-        xaxis=dict(gridcolor="#2D333B", zeroline=False),
+        title=dict(text="RSI (14)", font=dict(size=14, color=COLORS["text"])),
+        height=220, paper_bgcolor=COLORS["paper"], plot_bgcolor=COLORS["plot"],
+        font=dict(color=COLORS["text"]), margin=dict(l=10, r=10, t=40, b=10),
+        yaxis=dict(range=[0, 100], gridcolor=COLORS["grid"], zeroline=False),
+        xaxis=dict(gridcolor=COLORS["grid"], zeroline=False),
         showlegend=False, hovermode="x unified",
+        hoverlabel=dict(bgcolor="#FFFFFF", bordercolor="#E2E8F0", font=dict(color="#1A202C")),
     )
     return fig
 
@@ -320,19 +417,21 @@ def build_macd_chart(df):
     fig.add_trace(go.Bar(x=df.index, y=df["MACD_hist"], name="Histogram",
         marker_color=hist_colors, opacity=0.7))
     fig.add_trace(go.Scatter(x=df.index, y=df["MACD"], name="MACD",
-        line=dict(color="#00D4FF", width=1.8)))
+        line=dict(color=COLORS["macd_line"], width=1.8)))
     fig.add_trace(go.Scatter(x=df.index, y=df["MACD_signal"], name="Signal",
-        line=dict(color="#FF9800", width=1.8)))
-    fig.add_hline(y=0, line_color="#555", line_width=1)
+        line=dict(color=COLORS["signal_line"], width=1.8)))
+    fig.add_hline(y=0, line_color="#CBD5E1", line_width=1)
     fig.update_layout(
-        title=dict(text="MACD (12, 26, 9)", font=dict(size=14)),
-        height=220, paper_bgcolor="#0E1117", plot_bgcolor="#161B22",
-        font=dict(color="#FAFAFA"), margin=dict(l=10, r=10, t=40, b=10),
+        title=dict(text="MACD (12, 26, 9)", font=dict(size=14, color=COLORS["text"])),
+        height=220, paper_bgcolor=COLORS["paper"], plot_bgcolor=COLORS["plot"],
+        font=dict(color=COLORS["text"]), margin=dict(l=10, r=10, t=40, b=10),
         legend=dict(orientation="h", yanchor="top", y=-0.15,
-                    xanchor="right", x=1, font=dict(size=10)),
-        xaxis=dict(gridcolor="#2D333B", zeroline=False),
-        yaxis=dict(gridcolor="#2D333B", zeroline=False),
+                    xanchor="right", x=1, font=dict(size=10),
+                    bgcolor="rgba(255,255,255,0.85)", bordercolor="#E2E8F0", borderwidth=1),
+        xaxis=dict(gridcolor=COLORS["grid"], zeroline=False),
+        yaxis=dict(gridcolor=COLORS["grid"], zeroline=False),
         hovermode="x unified",
+        hoverlabel=dict(bgcolor="#FFFFFF", bordercolor="#E2E8F0", font=dict(color="#1A202C")),
     )
     return fig
 
