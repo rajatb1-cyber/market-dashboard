@@ -7,6 +7,7 @@ import ta as ta_lib
 from datetime import datetime
 import time
 import finnhub
+from watchlist import render_watchlist
 
 # ── Page config ────────────────────────────────────────────────────────────────
 st.set_page_config(
@@ -521,104 +522,110 @@ def render_sidebar():
 def main():
     ticker, timeframe, overlays, show_volume, show_rsi, show_macd, auto_refresh = render_sidebar()
 
-    # ── Market overview ──────────────────────────────────────────────────────
-    st.subheader("Market Overview")
-    render_overview_row("Indices",     INDICES)
-    st.markdown("")
-    render_overview_row("Bonds / Rates", BONDS)
-    st.markdown("")
+    tab_charts, tab_watchlist = st.tabs(["📊  Charts & Indicators", "📋  Watchlist"])
 
-    col_left, col_right = st.columns(2)
-    with col_left:
-        render_overview_row("Commodities", COMMODITIES)
-    with col_right:
-        render_overview_row("Currencies",  CURRENCIES)
+    with tab_watchlist:
+        render_watchlist()
 
-    st.markdown("")
-    render_overview_row("Crypto", CRYPTO)
-    st.markdown("---")
+    with tab_charts:
+        # ── Market overview ──────────────────────────────────────────────────
+        st.subheader("Market Overview")
+        render_overview_row("Indices",       INDICES)
+        st.markdown("")
+        render_overview_row("Bonds / Rates", BONDS)
+        st.markdown("")
 
-    # ── Ticker detail ────────────────────────────────────────────────────────
-    q = fetch_realtime_quote(ticker)
-    if q:
-        price      = q["price"]
-        change     = q["change"]
-        change_pct = q["change_pct"]
-        arrow      = "▲" if change >= 0 else "▼"
-        source     = q.get("source", "")
+        col_left, col_right = st.columns(2)
+        with col_left:
+            render_overview_row("Commodities", COMMODITIES)
+        with col_right:
+            render_overview_row("Currencies",  CURRENCIES)
 
-        c1, c2, c3, c4, c5 = st.columns([3, 2, 2, 2, 2])
-        c1.markdown(f"### {ticker}")
-        c1.caption(source)
-        price_fmt = f"{price:,.4f}" if price < 10 else f"{price:,.2f}"
-        c2.metric("Price",    price_fmt)
-        c3.metric("Change",   f"{arrow} {abs(change_pct):.2f}%",
-                  delta=f"{change:+.4f}" if price < 10 else f"{change:+.2f}",
-                  delta_color="normal" if change >= 0 else "inverse")
-        c4.metric("Day High", f"{q['high']:,.2f}" if q.get("high") else "—")
-        c5.metric("Day Low",  f"{q['low']:,.2f}"  if q.get("low")  else "—")
-    else:
-        st.warning(f"Could not fetch data for **{ticker}**. Check the ticker symbol.")
+        st.markdown("")
+        render_overview_row("Crypto", CRYPTO)
+        st.markdown("---")
 
-    # ── Chart ────────────────────────────────────────────────────────────────
-    period, interval = TIMEFRAMES[timeframe]
-    with st.spinner("Loading chart…"):
-        df = fetch_history(ticker, period, interval)
+        # ── Ticker detail ────────────────────────────────────────────────────
+        q = fetch_realtime_quote(ticker)
+        if q:
+            price      = q["price"]
+            change     = q["change"]
+            change_pct = q["change_pct"]
+            arrow      = "▲" if change >= 0 else "▼"
+            source     = q.get("source", "")
 
-    if df.empty:
-        st.error("No historical data returned. Try a different ticker or timeframe.")
-        return
+            c1, c2, c3, c4, c5 = st.columns([3, 2, 2, 2, 2])
+            c1.markdown(f"### {ticker}")
+            c1.caption(source)
+            price_fmt = f"{price:,.4f}" if price < 10 else f"{price:,.2f}"
+            c2.metric("Price",    price_fmt)
+            c3.metric("Change",   f"{arrow} {abs(change_pct):.2f}%",
+                      delta=f"{change:+.4f}" if price < 10 else f"{change:+.2f}",
+                      delta_color="normal" if change >= 0 else "inverse")
+            c4.metric("Day High", f"{q['high']:,.2f}" if q.get("high") else "—")
+            c5.metric("Day Low",  f"{q['low']:,.2f}"  if q.get("low")  else "—")
+        else:
+            st.warning(f"Could not fetch data for **{ticker}**. Check the ticker symbol.")
 
-    st.plotly_chart(build_main_chart(df, ticker, overlays, show_volume),
-                    use_container_width=True)
+        # ── Chart ────────────────────────────────────────────────────────────
+        period, interval = TIMEFRAMES[timeframe]
+        with st.spinner("Loading chart…"):
+            df = fetch_history(ticker, period, interval)
 
-    # ── Indicators ───────────────────────────────────────────────────────────
-    if show_rsi and show_macd:
-        c1, c2 = st.columns(2)
-        with c1: st.plotly_chart(build_rsi_chart(df),  use_container_width=True)
-        with c2: st.plotly_chart(build_macd_chart(df), use_container_width=True)
-    elif show_rsi:
-        st.plotly_chart(build_rsi_chart(df),  use_container_width=True)
-    elif show_macd:
-        st.plotly_chart(build_macd_chart(df), use_container_width=True)
+        if df.empty:
+            st.error("No historical data returned. Try a different ticker or timeframe.")
+            return
 
-    # ── Summary stats ────────────────────────────────────────────────────────
-    with st.expander("Summary statistics"):
-        last = df.tail(1).iloc[0]
-        stats = {
-            "Open":   f"{last['Open']:.4f}"  if last['Open']  < 10 else f"{last['Open']:,.2f}",
-            "High":   f"{last['High']:.4f}"  if last['High']  < 10 else f"{last['High']:,.2f}",
-            "Low":    f"{last['Low']:.4f}"   if last['Low']   < 10 else f"{last['Low']:,.2f}",
-            "Close":  f"{last['Close']:.4f}" if last['Close'] < 10 else f"{last['Close']:,.2f}",
-            "Volume": fmt_large(last.get("Volume")),
-        }
-        if "RSI" in df:
-            v = df["RSI"].dropna().iloc[-1]
-            zone = "Overbought 🔴" if v > 70 else "Oversold 🟢" if v < 30 else "Neutral ⚪"
-            stats["RSI (14)"] = f"{v:.2f}  —  {zone}"
-        if "MACD" in df:
-            m   = df["MACD"].dropna().iloc[-1]
-            sig = df["MACD_signal"].dropna().iloc[-1]
-            stats["MACD"] = f"{m:.4f}  (Signal: {sig:.4f})"
-        if "SMA20" in df:
-            stats["SMA 20"] = f"{df['SMA20'].dropna().iloc[-1]:,.2f}"
-        if "SMA50" in df:
-            stats["SMA 50"] = f"{df['SMA50'].dropna().iloc[-1]:,.2f}"
-        st.table(pd.DataFrame(stats.items(), columns=["Indicator", "Value"]).set_index("Indicator"))
+        st.plotly_chart(build_main_chart(df, ticker, overlays, show_volume),
+                        use_container_width=True)
 
-    # ── Raw data ─────────────────────────────────────────────────────────────
-    with st.expander("Raw OHLCV data (last 50 rows)"):
-        display_cols = [c for c in ["Open", "High", "Low", "Close", "Volume"] if c in df.columns]
-        st.dataframe(
-            df[display_cols].tail(50).sort_index(ascending=False).round(2),
-            use_container_width=True,
-        )
+        # ── Indicators ───────────────────────────────────────────────────────
+        if show_rsi and show_macd:
+            c1, c2 = st.columns(2)
+            with c1: st.plotly_chart(build_rsi_chart(df),  use_container_width=True)
+            with c2: st.plotly_chart(build_macd_chart(df), use_container_width=True)
+        elif show_rsi:
+            st.plotly_chart(build_rsi_chart(df),  use_container_width=True)
+        elif show_macd:
+            st.plotly_chart(build_macd_chart(df), use_container_width=True)
 
-    # ── Auto-refresh ─────────────────────────────────────────────────────────
-    if auto_refresh:
-        time.sleep(30)
-        st.cache_data.clear()
-        st.rerun()
+        # ── Summary stats ────────────────────────────────────────────────────
+        with st.expander("Summary statistics"):
+            last = df.tail(1).iloc[0]
+            stats = {
+                "Open":   f"{last['Open']:.4f}"  if last['Open']  < 10 else f"{last['Open']:,.2f}",
+                "High":   f"{last['High']:.4f}"  if last['High']  < 10 else f"{last['High']:,.2f}",
+                "Low":    f"{last['Low']:.4f}"   if last['Low']   < 10 else f"{last['Low']:,.2f}",
+                "Close":  f"{last['Close']:.4f}" if last['Close'] < 10 else f"{last['Close']:,.2f}",
+                "Volume": fmt_large(last.get("Volume")),
+            }
+            if "RSI" in df:
+                v = df["RSI"].dropna().iloc[-1]
+                zone = "Overbought 🔴" if v > 70 else "Oversold 🟢" if v < 30 else "Neutral ⚪"
+                stats["RSI (14)"] = f"{v:.2f}  —  {zone}"
+            if "MACD" in df:
+                m   = df["MACD"].dropna().iloc[-1]
+                sig = df["MACD_signal"].dropna().iloc[-1]
+                stats["MACD"] = f"{m:.4f}  (Signal: {sig:.4f})"
+            if "SMA20" in df:
+                stats["SMA 20"] = f"{df['SMA20'].dropna().iloc[-1]:,.2f}"
+            if "SMA50" in df:
+                stats["SMA 50"] = f"{df['SMA50'].dropna().iloc[-1]:,.2f}"
+            st.table(pd.DataFrame(stats.items(), columns=["Indicator", "Value"]).set_index("Indicator"))
+
+        # ── Raw data ─────────────────────────────────────────────────────────
+        with st.expander("Raw OHLCV data (last 50 rows)"):
+            display_cols = [c for c in ["Open", "High", "Low", "Close", "Volume"] if c in df.columns]
+            st.dataframe(
+                df[display_cols].tail(50).sort_index(ascending=False).round(2),
+                use_container_width=True,
+            )
+
+        # ── Auto-refresh ─────────────────────────────────────────────────────
+        if auto_refresh:
+            time.sleep(30)
+            st.cache_data.clear()
+            st.rerun()
 
 
 if __name__ == "__main__":

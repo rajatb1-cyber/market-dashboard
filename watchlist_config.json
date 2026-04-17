@@ -1,0 +1,24 @@
+{
+  "instruments": [
+    {"name": "S&P 500",      "ticker": "^GSPC",    "class": "Equity"},
+    {"name": "NASDAQ",       "ticker": "^IXIC",    "class": "Equity"},
+    {"name": "FTSE 100",     "ticker": "^FTSE",    "class": "Equity"},
+    {"name": "DAX",          "ticker": "^GDAXI",   "class": "Equity"},
+    {"name": "Dow Jones",    "ticker": "^DJI",     "class": "Equity"},
+    {"name": "EUR/USD",      "ticker": "EURUSD=X", "class": "FX"},
+    {"name": "GBP/USD",      "ticker": "GBPUSD=X", "class": "FX"},
+    {"name": "USD/JPY",      "ticker": "JPY=X",    "class": "FX"},
+    {"name": "USD/CHF",      "ticker": "CHF=X",    "class": "FX"},
+    {"name": "US 10Y",       "ticker": "^TNX",     "class": "Rates"},
+    {"name": "US 2Y",        "ticker": "^IRX",     "class": "Rates"},
+    {"name": "US 30Y",       "ticker": "^TYX",     "class": "Rates"},
+    {"name": "UK 10Y Gilt",  "ticker": "^GUKG10",  "class": "Rates"},
+    {"name": "Gold",         "ticker": "GC=F",     "class": "Commodity"},
+    {"name": "WTI Oil",      "ticker": "CL=F",     "class": "Commodity"},
+    {"name": "Brent Crude",  "ticker": "BZ=F",     "class": "Commodity"},
+    {"name": "Silver",       "ticker": "SI=F",     "class": "Commodity"},
+    {"name": "Bitcoin",      "ticker": "BTC-USD",  "class": "Crypto"},
+    {"name": "Ethereum",     "ticker": "ETH-USD",  "class": "Crypto"}
+  ],
+  "columns": ["Price", "Change %", "Weekly %", "Monthly %", "RSI", "52W High", "52W Low"]
+}
