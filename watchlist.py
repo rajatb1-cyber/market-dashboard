@@ -594,6 +594,12 @@ def render_watchlist():
             )
 
         if not df_chart.empty:
+            # Key encodes all options so Streamlit always redraws when anything changes
+            chart_key = (
+                f"wl_{sel['ticker']}_{tf}_{chart_type}_{rsi_period}"
+                f"_{'_'.join(sorted(overlays or []))}"
+                f"_{start_str}_{end_str}"
+            )
             st.plotly_chart(
                 build_instrument_chart(
                     df_chart, sel["name"], sel["ticker"],
@@ -602,6 +608,7 @@ def render_watchlist():
                     rsi_period=int(rsi_period),
                 ),
                 use_container_width=True,
+                key=chart_key,
             )
         else:
             st.warning("No chart data available for this instrument / timeframe.")
