@@ -265,6 +265,7 @@ def style_table(df_display: pd.DataFrame, active_cols: list):
 # ── Chart for selected instrument ──────────────────────────────────────────────
 @st.cache_data(ttl=60)
 def fetch_chart_data(ticker: str, period: str | None, interval: str,
+                     rsi_period: int = 14,
                      start: str | None = None, end: str | None = None) -> pd.DataFrame:
     try:
         if start and end:
@@ -280,70 +281,126 @@ def fetch_chart_data(ticker: str, period: str | None, interval: str,
             close = df["Close"].squeeze().astype(float)
             df["SMA20"] = ta_lib.trend.SMAIndicator(close, window=20).sma_indicator()
             df["SMA50"] = ta_lib.trend.SMAIndicator(close, window=50).sma_indicator()
-            df["RSI"]   = ta_lib.momentum.RSIIndicator(close, window=14).rsi()
+            df["EMA20"] = ta_lib.trend.EMAIndicator(close, window=20).ema_indicator()
+            bb = ta_lib.volatility.BollingerBands(close, window=20, window_dev=2)
+            df["BB_upper"] = bb.bollinger_hband()
+            df["BB_lower"] = bb.bollinger_lband()
+            df["RSI"] = ta_lib.momentum.RSIIndicator(close, window=rsi_period).rsi()
         return df
     except Exception:
         return pd.DataFrame()
 
 
-def build_instrument_chart(df: pd.DataFrame, name: str, ticker: str) -> go.Figure:
+def build_instrument_chart(df: pd.DataFrame, name: str, ticker: str,
+                            chart_type: str = "Candlestick",
+                            overlays: list = None,
+                            rsi_period: int = 14,
+                            show_volume: bool = True) -> go.Figure:
+    if overlays is None:
+        overlays = ["SMA 20", "SMA 50"]
+
+    show_rsi = True
+    rows      = 3 if show_volume else 2
+    heights   = [0.60, 0.20, 0.20] if show_volume else [0.72, 0.28]
+
     fig = make_subplots(
-        rows=3, cols=1,
+        rows=rows, cols=1,
         shared_xaxes=True,
         vertical_spacing=0.03,
-        row_heights=[0.60, 0.20, 0.20],
+        row_heights=heights,
     )
 
-    # Candlestick
-    fig.add_trace(go.Candlestick(
-        x=df.index,
-        open=df["Open"], high=df["High"],
-        low=df["Low"],   close=df["Close"],
-        name="Price",
-        increasing_line_color="#059669", decreasing_line_color="#DC2626",
-        increasing_fillcolor="#059669",  decreasing_fillcolor="#DC2626",
-    ), row=1, col=1)
+    close = df["Close"].squeeze()
 
-    if "SMA20" in df:
+    # ── Price trace ────────────────────────────────────────────────────────
+    if chart_type == "Line":
+        fig.add_trace(go.Scatter(
+            x=df.index, y=close, name="Price",
+            line=dict(color="#2563EB", width=2),
+            fill="tozeroy", fillcolor="rgba(37,99,235,0.05)",
+        ), row=1, col=1)
+
+    elif chart_type == "OHLC Bar":
+        fig.add_trace(go.Ohlc(
+            x=df.index,
+            open=df["Open"], high=df["High"],
+            low=df["Low"],   close=df["Close"],
+            name="Price",
+            increasing_line_color="#059669",
+            decreasing_line_color="#DC2626",
+        ), row=1, col=1)
+
+    else:  # Candlestick (default)
+        fig.add_trace(go.Candlestick(
+            x=df.index,
+            open=df["Open"], high=df["High"],
+            low=df["Low"],   close=df["Close"],
+            name="Price",
+            increasing_line_color="#059669", decreasing_line_color="#DC2626",
+            increasing_fillcolor="#059669",  decreasing_fillcolor="#DC2626",
+        ), row=1, col=1)
+
+    # ── Overlays ───────────────────────────────────────────────────────────
+    if "SMA 20" in overlays and "SMA20" in df:
         fig.add_trace(go.Scatter(x=df.index, y=df["SMA20"], name="SMA 20",
             line=dict(color="#D97706", width=1.5)), row=1, col=1)
-    if "SMA50" in df:
+
+    if "SMA 50" in overlays and "SMA50" in df:
         fig.add_trace(go.Scatter(x=df.index, y=df["SMA50"], name="SMA 50",
             line=dict(color="#2563EB", width=1.5)), row=1, col=1)
 
-    # Volume
-    if "Volume" in df.columns:
+    if "EMA 20" in overlays and "EMA20" in df:
+        fig.add_trace(go.Scatter(x=df.index, y=df["EMA20"], name="EMA 20",
+            line=dict(color="#7C3AED", width=1.5, dash="dot")), row=1, col=1)
+
+    if "Bollinger Bands" in overlays and "BB_upper" in df:
+        fig.add_trace(go.Scatter(x=df.index, y=df["BB_upper"], name="BB Upper",
+            line=dict(color="rgba(37,99,235,0.5)", width=1)), row=1, col=1)
+        fig.add_trace(go.Scatter(x=df.index, y=df["BB_lower"], name="BB Lower",
+            line=dict(color="rgba(37,99,235,0.5)", width=1),
+            fill="tonexty", fillcolor="rgba(37,99,235,0.04)"), row=1, col=1)
+
+    # ── Volume ─────────────────────────────────────────────────────────────
+    vol_row = 2
+    rsi_row = 3 if show_volume else 2
+
+    if show_volume and "Volume" in df.columns:
         vol = df["Volume"].squeeze()
         vol_colors = [
             "rgba(5,150,105,0.3)" if c >= o else "rgba(220,38,38,0.3)"
             for o, c in zip(df["Open"], df["Close"])
         ]
         fig.add_trace(go.Bar(x=df.index, y=vol, name="Volume",
-            marker_color=vol_colors, showlegend=False), row=2, col=1)
+            marker_color=vol_colors, showlegend=False), row=vol_row, col=1)
+        fig.update_yaxes(gridcolor="#E8EDF5", zeroline=False,
+                         tickfont=dict(size=10), row=vol_row, col=1)
 
-    # RSI
+    # ── RSI ────────────────────────────────────────────────────────────────
     if "RSI" in df:
         fig.add_hrect(y0=70, y1=100, fillcolor="rgba(220,38,38,0.05)",
-                      line_width=0, row=3, col=1)
+                      line_width=0, row=rsi_row, col=1)
         fig.add_hrect(y0=0,  y1=30,  fillcolor="rgba(5,150,105,0.05)",
-                      line_width=0, row=3, col=1)
+                      line_width=0, row=rsi_row, col=1)
         fig.add_hline(y=70, line_dash="dash", line_color="#DC2626",
-                      line_width=1, row=3, col=1)
+                      line_width=1, row=rsi_row, col=1)
         fig.add_hline(y=30, line_dash="dash", line_color="#059669",
-                      line_width=1, row=3, col=1)
-        fig.add_trace(go.Scatter(x=df.index, y=df["RSI"], name="RSI(14)",
+                      line_width=1, row=rsi_row, col=1)
+        fig.add_trace(go.Scatter(
+            x=df.index, y=df["RSI"],
+            name=f"RSI({rsi_period})",
             line=dict(color="#2563EB", width=1.8),
-            fill="tozeroy", fillcolor="rgba(37,99,235,0.05)"), row=3, col=1)
-        fig.update_yaxes(range=[0, 100], row=3, col=1,
+            fill="tozeroy", fillcolor="rgba(37,99,235,0.05)",
+        ), row=rsi_row, col=1)
+        fig.update_yaxes(range=[0, 100], row=rsi_row, col=1,
                          tickfont=dict(size=10), gridcolor="#E8EDF5")
 
     fig.update_layout(
         title=dict(
-            text=f"<b>{name}</b>  <span style='font-size:13px;color:#64748B'>({ticker})</span>",
+            text=f"<b>{name}</b>  <span style='font-size:13px;color:#64748B'>({ticker})  ·  {chart_type}  ·  RSI({rsi_period})</span>",
             font=dict(size=16, color="#1A202C", family="Inter, Segoe UI, sans-serif"),
         ),
         xaxis_rangeslider_visible=False,
-        height=580,
+        height=600,
         paper_bgcolor="#FFFFFF", plot_bgcolor="#FAFBFD",
         font=dict(color="#1A202C", family="Inter, Segoe UI, sans-serif"),
         legend=dict(orientation="h", yanchor="bottom", y=1.02,
@@ -358,8 +415,6 @@ def build_instrument_chart(df: pd.DataFrame, name: str, ticker: str) -> go.Figur
                      showspikes=True, spikecolor="#94A3B8", spikethickness=1)
     fig.update_yaxes(gridcolor="#E8EDF5", zeroline=False, linecolor="#E2E8F0",
                      showspikes=True, spikecolor="#94A3B8", spikethickness=1, row=1, col=1)
-    fig.update_yaxes(gridcolor="#E8EDF5", zeroline=False, row=2, col=1,
-                     tickfont=dict(size=10))
     return fig
 
 
@@ -471,8 +526,8 @@ def render_watchlist():
             unsafe_allow_html=True,
         )
 
-        # Timeframe selector
-        tf_cols = st.columns([6, 1])
+        # ── Row 1: Timeframe + Close ──────────────────────────────────────
+        tf_cols = st.columns([7, 1])
         with tf_cols[0]:
             tf = st.segmented_control(
                 "Timeframe",
@@ -481,11 +536,39 @@ def render_watchlist():
                 key=f"tf_{sel['ticker']}",
             )
         with tf_cols[1]:
-            if st.button("✕ Close", key="close_chart"):
+            st.markdown("<div style='margin-top:24px'>", unsafe_allow_html=True)
+            if st.button("✕ Close", key="close_chart", use_container_width=True):
                 st.session_state.wl_selected = None
                 st.rerun()
+            st.markdown("</div>", unsafe_allow_html=True)
 
-        # Custom date range
+        # ── Row 2: Chart type · RSI period · Overlays ─────────────────────
+        opt_c1, opt_c2, opt_c3 = st.columns([2, 2, 4])
+
+        with opt_c1:
+            chart_type = st.selectbox(
+                "Chart type",
+                ["Candlestick", "OHLC Bar", "Line"],
+                key=f"ct_{sel['ticker']}",
+            )
+
+        with opt_c2:
+            rsi_period = st.number_input(
+                "RSI period", min_value=2, max_value=50,
+                value=14, step=1,
+                key=f"rsi_{sel['ticker']}",
+                help="Standard is 14. Higher = smoother, lower = more sensitive.",
+            )
+
+        with opt_c3:
+            overlays = st.multiselect(
+                "Overlays",
+                ["SMA 20", "SMA 50", "EMA 20", "Bollinger Bands"],
+                default=["SMA 20", "SMA 50"],
+                key=f"ov_{sel['ticker']}",
+            )
+
+        # ── Custom date range ─────────────────────────────────────────────
         if tf == "Custom":
             d_col1, d_col2 = st.columns(2)
             with d_col1:
@@ -495,8 +578,8 @@ def render_watchlist():
                 end_date = st.date_input("To", value=date.today(),
                                          min_value=start_date + timedelta(days=1),
                                          max_value=date.today())
-            period   = None
-            interval = "1d"
+            period    = None
+            interval  = "1d"
             start_str = str(start_date)
             end_str   = str(end_date)
         else:
@@ -505,12 +588,19 @@ def render_watchlist():
 
         with st.spinner(f"Loading {sel['name']} chart…"):
             df_chart = fetch_chart_data(
-                sel["ticker"], period, interval, start_str, end_str
+                sel["ticker"], period, interval,
+                rsi_period=int(rsi_period),
+                start=start_str, end=end_str,
             )
 
         if not df_chart.empty:
             st.plotly_chart(
-                build_instrument_chart(df_chart, sel["name"], sel["ticker"]),
+                build_instrument_chart(
+                    df_chart, sel["name"], sel["ticker"],
+                    chart_type=chart_type,
+                    overlays=overlays,
+                    rsi_period=int(rsi_period),
+                ),
                 use_container_width=True,
             )
         else:
