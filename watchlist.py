@@ -294,20 +294,15 @@ def fetch_chart_data(ticker: str, period: str | None, interval: str,
 def build_instrument_chart(df: pd.DataFrame, name: str, ticker: str,
                             chart_type: str = "Candlestick",
                             overlays: list = None,
-                            rsi_period: int = 14,
-                            show_volume: bool = True) -> go.Figure:
+                            rsi_period: int = 14) -> go.Figure:
     if overlays is None:
         overlays = ["SMA 20", "SMA 50"]
 
-    show_rsi = True
-    rows      = 3 if show_volume else 2
-    heights   = [0.60, 0.20, 0.20] if show_volume else [0.72, 0.28]
-
     fig = make_subplots(
-        rows=rows, cols=1,
+        rows=2, cols=1,
         shared_xaxes=True,
         vertical_spacing=0.03,
-        row_heights=heights,
+        row_heights=[0.72, 0.28],
     )
 
     close = df["Close"].squeeze()
@@ -342,11 +337,11 @@ def build_instrument_chart(df: pd.DataFrame, name: str, ticker: str,
     # ── Overlays ───────────────────────────────────────────────────────────
     if "SMA 20" in overlays and "SMA20" in df:
         fig.add_trace(go.Scatter(x=df.index, y=df["SMA20"], name="SMA 20",
-            line=dict(color="#F59E0B", width=1.5)), row=1, col=1)
+            line=dict(color="#F59E0B", width=1.5, dash="dot")), row=1, col=1)
 
     if "SMA 50" in overlays and "SMA50" in df:
         fig.add_trace(go.Scatter(x=df.index, y=df["SMA50"], name="SMA 50",
-            line=dict(color="#A855F7", width=1.5)), row=1, col=1)
+            line=dict(color="#A855F7", width=1.5, dash="dot")), row=1, col=1)
 
     if "EMA 20" in overlays and "EMA20" in df:
         fig.add_trace(go.Scatter(x=df.index, y=df["EMA20"], name="EMA 20",
@@ -359,22 +354,8 @@ def build_instrument_chart(df: pd.DataFrame, name: str, ticker: str,
             line=dict(color="rgba(100,116,139,0.6)", width=1),
             fill="tonexty", fillcolor="rgba(100,116,139,0.05)"), row=1, col=1)
 
-    # ── Volume ─────────────────────────────────────────────────────────────
-    vol_row = 2
-    rsi_row = 3 if show_volume else 2
-
-    if show_volume and "Volume" in df.columns:
-        vol = df["Volume"].squeeze()
-        vol_colors = [
-            "rgba(5,150,105,0.3)" if c >= o else "rgba(220,38,38,0.3)"
-            for o, c in zip(df["Open"], df["Close"])
-        ]
-        fig.add_trace(go.Bar(x=df.index, y=vol, name="Volume",
-            marker_color=vol_colors, showlegend=False), row=vol_row, col=1)
-        fig.update_yaxes(gridcolor="#E8EDF5", zeroline=False,
-                         tickfont=dict(size=10), row=vol_row, col=1)
-
     # ── RSI ────────────────────────────────────────────────────────────────
+    rsi_row = 2
     if "RSI" in df:
         fig.add_hrect(y0=70, y1=100, fillcolor="rgba(220,38,38,0.05)",
                       line_width=0, row=rsi_row, col=1)

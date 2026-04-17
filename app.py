@@ -337,10 +337,10 @@ def build_main_chart(df, ticker, overlays, show_volume):
 
     if "SMA 20" in overlays and "SMA20" in df:
         fig.add_trace(go.Scatter(x=df.index, y=df["SMA20"], name="SMA 20",
-            line=dict(color=COLORS["sma20"], width=1.5)), row=1, col=1)
+            line=dict(color=COLORS["sma20"], width=1.5, dash="dot")), row=1, col=1)
     if "SMA 50" in overlays and "SMA50" in df:
         fig.add_trace(go.Scatter(x=df.index, y=df["SMA50"], name="SMA 50",
-            line=dict(color=COLORS["sma50"], width=1.5)), row=1, col=1)
+            line=dict(color=COLORS["sma50"], width=1.5, dash="dot")), row=1, col=1)
     if "EMA 20" in overlays and "EMA20" in df:
         fig.add_trace(go.Scatter(x=df.index, y=df["EMA20"], name="EMA 20",
             line=dict(color=COLORS["ema20"], width=1.5, dash="dot")), row=1, col=1)
