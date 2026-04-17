@@ -339,8 +339,20 @@ def render_watchlist():
             st.rerun()
         st.markdown("</div>", unsafe_allow_html=True)
 
-    render_legend()
-    st.markdown("<div style='margin-top:8px'></div>", unsafe_allow_html=True)
+    # ── Asset class filter pills ──────────────────────────────────────────────
+    present_classes = sorted({i["class"] for i in instruments})
+    selected_classes = st.pills(
+        "Filter by asset class",
+        options=present_classes,
+        default=present_classes,
+        selection_mode="multi",
+        help="Click to show/hide asset classes",
+    )
+    # Fall back to all if nothing selected
+    if not selected_classes:
+        selected_classes = present_classes
+
+    st.markdown("<div style='margin-top:4px'></div>", unsafe_allow_html=True)
 
     # ── Fetch and build rows ──────────────────────────────────────────────────
     tickers = tuple(i["ticker"] for i in instruments)
@@ -350,6 +362,9 @@ def render_watchlist():
 
     rows = [compute_row(inst, batch.get(inst["ticker"]), active_cols) for inst in instruments]
     df_rows = pd.DataFrame(rows)
+
+    # Filter by selected asset classes
+    df_rows = df_rows[df_rows["Class"].isin(selected_classes)]
 
     # Sort
     if sort_col in df_rows.columns:
