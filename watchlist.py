@@ -317,7 +317,6 @@ def build_instrument_chart(df: pd.DataFrame, name: str, ticker: str,
         fig.add_trace(go.Scatter(
             x=df.index, y=close, name="Price",
             line=dict(color="#2563EB", width=2),
-            fill="tozeroy", fillcolor="rgba(37,99,235,0.05)",
         ), row=1, col=1)
 
     elif chart_type == "OHLC Bar":
@@ -414,7 +413,8 @@ def build_instrument_chart(df: pd.DataFrame, name: str, ticker: str,
     fig.update_xaxes(gridcolor="#E8EDF5", zeroline=False, linecolor="#E2E8F0",
                      showspikes=True, spikecolor="#94A3B8", spikethickness=1)
     fig.update_yaxes(gridcolor="#E8EDF5", zeroline=False, linecolor="#E2E8F0",
-                     showspikes=True, spikecolor="#94A3B8", spikethickness=1, row=1, col=1)
+                     showspikes=True, spikecolor="#94A3B8", spikethickness=1,
+                     rangemode="normal", autorange=True, row=1, col=1)
     return fig
 
 
