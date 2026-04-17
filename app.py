@@ -316,6 +316,42 @@ def fetch_history(ticker: str, period: str, interval: str) -> pd.DataFrame:
     return df
 
 
+# ── Chart helpers ──────────────────────────────────────────────────────────────
+def get_rangebreaks(df: pd.DataFrame) -> list:
+    """
+    Build Plotly rangebreaks that hide weekends and market holidays.
+    Works for both daily and intraday data.
+    """
+    breaks = [dict(bounds=["sat", "mon"])]  # always skip weekends
+
+    if df.empty or len(df) < 2:
+        return breaks
+
+    idx = pd.DatetimeIndex(df.index)
+    delta_seconds = (idx[1] - idx[0]).total_seconds()
+
+    if delta_seconds >= 86_400:  # daily or weekly — also detect holidays
+        try:
+            dates = idx.normalize()
+            all_bdays = pd.bdate_range(dates.min(), dates.max())
+            holidays = all_bdays.difference(dates)
+            if len(holidays):
+                breaks.append(dict(values=holidays.strftime("%Y-%m-%d").tolist()))
+        except Exception:
+            pass
+    else:  # intraday — also hide overnight hours if the data suggests regular sessions
+        try:
+            hours = idx.hour + idx.minute / 60
+            lo, hi = hours.min(), hours.max()
+            # Only apply hour breaks when data fits a recognisable session window
+            if hi - lo < 18:
+                breaks.append(dict(bounds=[hi + 0.25, lo - 0.25], pattern="hour"))
+        except Exception:
+            pass
+
+    return breaks
+
+
 # ── Chart builders ─────────────────────────────────────────────────────────────
 def build_main_chart(df, ticker, overlays, show_volume):
     row_heights = [0.7, 0.3] if show_volume else [1.0]
@@ -383,7 +419,8 @@ def build_main_chart(df, ticker, overlays, show_volume):
                         font=dict(color="#1A202C", size=12)),
     )
     fig.update_xaxes(gridcolor=COLORS["grid"], zeroline=False, linecolor="#E2E8F0",
-                     showspikes=True, spikecolor=COLORS["spike"], spikethickness=1)
+                     showspikes=True, spikecolor=COLORS["spike"], spikethickness=1,
+                     rangebreaks=get_rangebreaks(df))
     fig.update_yaxes(gridcolor=COLORS["grid"], zeroline=False, linecolor="#E2E8F0",
                      showspikes=True, spikecolor=COLORS["spike"], spikethickness=1)
     return fig

@@ -293,6 +293,32 @@ def fetch_chart_data(ticker: str, period: str | None, interval: str,
         return pd.DataFrame()
 
 
+def get_rangebreaks(df: pd.DataFrame) -> list:
+    breaks = [dict(bounds=["sat", "mon"])]
+    if df.empty or len(df) < 2:
+        return breaks
+    idx = pd.DatetimeIndex(df.index)
+    delta_seconds = (idx[1] - idx[0]).total_seconds()
+    if delta_seconds >= 86_400:
+        try:
+            dates = idx.normalize()
+            all_bdays = pd.bdate_range(dates.min(), dates.max())
+            holidays = all_bdays.difference(dates)
+            if len(holidays):
+                breaks.append(dict(values=holidays.strftime("%Y-%m-%d").tolist()))
+        except Exception:
+            pass
+    else:
+        try:
+            hours = idx.hour + idx.minute / 60
+            lo, hi = hours.min(), hours.max()
+            if hi - lo < 18:
+                breaks.append(dict(bounds=[hi + 0.25, lo - 0.25], pattern="hour"))
+        except Exception:
+            pass
+    return breaks
+
+
 def build_instrument_chart(df: pd.DataFrame, name: str, ticker: str,
                             chart_type: str = "Candlestick",
                             overlays: list = None,
@@ -402,7 +428,8 @@ def build_instrument_chart(df: pd.DataFrame, name: str, ticker: str,
                         font=dict(color="#1A202C", size=12)),
     )
     fig.update_xaxes(gridcolor="#E8EDF5", zeroline=False, linecolor="#E2E8F0",
-                     showspikes=True, spikecolor="#94A3B8", spikethickness=1)
+                     showspikes=True, spikecolor="#94A3B8", spikethickness=1,
+                     rangebreaks=get_rangebreaks(df))
     fig.update_yaxes(gridcolor="#E8EDF5", zeroline=False, linecolor="#E2E8F0",
                      showspikes=True, spikecolor="#94A3B8", spikethickness=1,
                      rangemode="normal", autorange=True, row=1, col=1)
