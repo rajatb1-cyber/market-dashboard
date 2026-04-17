@@ -316,7 +316,7 @@ def build_instrument_chart(df: pd.DataFrame, name: str, ticker: str,
     if chart_type == "Line":
         fig.add_trace(go.Scatter(
             x=df.index, y=close, name="Price",
-            line=dict(color="#2563EB", width=2),
+            line=dict(color="#0F172A", width=2),
         ), row=1, col=1)
 
     elif chart_type == "OHLC Bar":
@@ -342,22 +342,22 @@ def build_instrument_chart(df: pd.DataFrame, name: str, ticker: str,
     # ── Overlays ───────────────────────────────────────────────────────────
     if "SMA 20" in overlays and "SMA20" in df:
         fig.add_trace(go.Scatter(x=df.index, y=df["SMA20"], name="SMA 20",
-            line=dict(color="#D97706", width=1.5)), row=1, col=1)
+            line=dict(color="#F59E0B", width=1.5)), row=1, col=1)
 
     if "SMA 50" in overlays and "SMA50" in df:
         fig.add_trace(go.Scatter(x=df.index, y=df["SMA50"], name="SMA 50",
-            line=dict(color="#2563EB", width=1.5)), row=1, col=1)
+            line=dict(color="#A855F7", width=1.5)), row=1, col=1)
 
     if "EMA 20" in overlays and "EMA20" in df:
         fig.add_trace(go.Scatter(x=df.index, y=df["EMA20"], name="EMA 20",
-            line=dict(color="#7C3AED", width=1.5, dash="dot")), row=1, col=1)
+            line=dict(color="#EC4899", width=1.5, dash="dot")), row=1, col=1)
 
     if "Bollinger Bands" in overlays and "BB_upper" in df:
         fig.add_trace(go.Scatter(x=df.index, y=df["BB_upper"], name="BB Upper",
-            line=dict(color="rgba(37,99,235,0.5)", width=1)), row=1, col=1)
+            line=dict(color="rgba(100,116,139,0.6)", width=1)), row=1, col=1)
         fig.add_trace(go.Scatter(x=df.index, y=df["BB_lower"], name="BB Lower",
-            line=dict(color="rgba(37,99,235,0.5)", width=1),
-            fill="tonexty", fillcolor="rgba(37,99,235,0.04)"), row=1, col=1)
+            line=dict(color="rgba(100,116,139,0.6)", width=1),
+            fill="tonexty", fillcolor="rgba(100,116,139,0.05)"), row=1, col=1)
 
     # ── Volume ─────────────────────────────────────────────────────────────
     vol_row = 2
@@ -387,8 +387,8 @@ def build_instrument_chart(df: pd.DataFrame, name: str, ticker: str,
         fig.add_trace(go.Scatter(
             x=df.index, y=df["RSI"],
             name=f"RSI({rsi_period})",
-            line=dict(color="#2563EB", width=1.8),
-            fill="tozeroy", fillcolor="rgba(37,99,235,0.05)",
+            line=dict(color="#0EA5E9", width=1.8),
+            fill="tozeroy", fillcolor="rgba(14,165,233,0.06)",
         ), row=rsi_row, col=1)
         fig.update_yaxes(range=[0, 100], row=rsi_row, col=1,
                          tickfont=dict(size=10), gridcolor="#E8EDF5")

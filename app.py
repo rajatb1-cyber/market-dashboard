@@ -206,12 +206,12 @@ COLORS = {
     "down":        "#DC2626",
     "volume_up":   "rgba(5,150,105,0.25)",
     "volume_down": "rgba(220,38,38,0.25)",
-    "sma20":       "#D97706",
-    "sma50":       "#2563EB",
-    "ema20":       "#7C3AED",
-    "bb_upper":    "rgba(37,99,235,0.5)",
-    "bb_lower":    "rgba(37,99,235,0.5)",
-    "bb_fill":     "rgba(37,99,235,0.04)",
+    "sma20":       "#F59E0B",   # amber/gold
+    "sma50":       "#A855F7",   # purple
+    "ema20":       "#EC4899",   # pink
+    "bb_upper":    "rgba(100,116,139,0.6)",  # slate
+    "bb_lower":    "rgba(100,116,139,0.6)",
+    "bb_fill":     "rgba(100,116,139,0.05)",
     # chart backgrounds
     "paper":       "#FFFFFF",
     "plot":        "#FAFBFD",
@@ -219,10 +219,10 @@ COLORS = {
     "text":        "#1A202C",
     "spike":       "#94A3B8",
     # indicator lines
-    "rsi_line":    "#2563EB",
-    "rsi_fill":    "rgba(37,99,235,0.06)",
-    "macd_line":   "#2563EB",
-    "signal_line": "#D97706",
+    "rsi_line":    "#0EA5E9",   # sky blue
+    "rsi_fill":    "rgba(14,165,233,0.06)",
+    "macd_line":   "#0EA5E9",   # sky blue
+    "signal_line": "#F59E0B",   # amber
 }
 
 # ── Data helpers ───────────────────────────────────────────────────────────────
