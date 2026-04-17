@@ -295,8 +295,10 @@ def fetch_history(ticker: str, period: str, interval: str) -> pd.DataFrame:
 
     close = df["Close"].squeeze()
 
-    df["SMA20"] = ta_lib.trend.SMAIndicator(close, window=20).sma_indicator()
-    df["SMA50"] = ta_lib.trend.SMAIndicator(close, window=50).sma_indicator()
+    df["SMA20"]  = ta_lib.trend.SMAIndicator(close, window=20).sma_indicator()
+    df["SMA50"]  = ta_lib.trend.SMAIndicator(close, window=50).sma_indicator()
+    df["SMA100"] = ta_lib.trend.SMAIndicator(close, window=100).sma_indicator()
+    df["SMA200"] = ta_lib.trend.SMAIndicator(close, window=200).sma_indicator()
     df["EMA20"] = ta_lib.trend.EMAIndicator(close, window=20).ema_indicator()
 
     bb = ta_lib.volatility.BollingerBands(close, window=20, window_dev=2)
@@ -341,6 +343,12 @@ def build_main_chart(df, ticker, overlays, show_volume):
     if "SMA 50" in overlays and "SMA50" in df:
         fig.add_trace(go.Scatter(x=df.index, y=df["SMA50"], name="SMA 50",
             line=dict(color=COLORS["sma50"], width=1.5, dash="dot")), row=1, col=1)
+    if "SMA 100" in overlays and "SMA100" in df:
+        fig.add_trace(go.Scatter(x=df.index, y=df["SMA100"], name="SMA 100",
+            line=dict(color="#06B6D4", width=1.5, dash="dot")), row=1, col=1)
+    if "SMA 200" in overlays and "SMA200" in df:
+        fig.add_trace(go.Scatter(x=df.index, y=df["SMA200"], name="SMA 200",
+            line=dict(color="#EF4444", width=2, dash="dot")), row=1, col=1)
     if "EMA 20" in overlays and "EMA20" in df:
         fig.add_trace(go.Scatter(x=df.index, y=df["EMA20"], name="EMA 20",
             line=dict(color=COLORS["ema20"], width=1.5, dash="dot")), row=1, col=1)
@@ -391,8 +399,8 @@ def build_rsi_chart(df):
     fig.add_hrect(y0=0, y1=30, fillcolor="rgba(5,150,105,0.06)", line_width=0,
                   annotation_text="Oversold", annotation_position="bottom left",
                   annotation=dict(font_color="#059669", font_size=11))
-    fig.add_hline(y=70, line_dash="dash", line_color="#DC2626", line_width=1)
-    fig.add_hline(y=30, line_dash="dash", line_color="#059669", line_width=1)
+    fig.add_hline(y=70, line_dash="dot", line_color="#DC2626", line_width=1.5)
+    fig.add_hline(y=30, line_dash="dot", line_color="#059669", line_width=1.5)
     fig.add_hline(y=50, line_dash="dot",  line_color="#CBD5E1", line_width=1)
     fig.add_trace(go.Scatter(x=df.index, y=df["RSI"], name="RSI(14)",
         line=dict(color=COLORS["rsi_line"], width=2),
@@ -497,6 +505,8 @@ def render_sidebar():
     overlays = []
     if st.sidebar.checkbox("SMA 20",          value=True):  overlays.append("SMA 20")
     if st.sidebar.checkbox("SMA 50",          value=True):  overlays.append("SMA 50")
+    if st.sidebar.checkbox("SMA 100",         value=False): overlays.append("SMA 100")
+    if st.sidebar.checkbox("SMA 200",         value=False): overlays.append("SMA 200")
     if st.sidebar.checkbox("EMA 20",          value=False): overlays.append("EMA 20")
     if st.sidebar.checkbox("Bollinger Bands", value=False): overlays.append("Bollinger Bands")
     show_volume = st.sidebar.checkbox("Volume bars", value=True)

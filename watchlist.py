@@ -279,8 +279,10 @@ def fetch_chart_data(ticker: str, period: str | None, interval: str,
         df.dropna(inplace=True)
         if not df.empty:
             close = df["Close"].squeeze().astype(float)
-            df["SMA20"] = ta_lib.trend.SMAIndicator(close, window=20).sma_indicator()
-            df["SMA50"] = ta_lib.trend.SMAIndicator(close, window=50).sma_indicator()
+            df["SMA20"]  = ta_lib.trend.SMAIndicator(close, window=20).sma_indicator()
+            df["SMA50"]  = ta_lib.trend.SMAIndicator(close, window=50).sma_indicator()
+            df["SMA100"] = ta_lib.trend.SMAIndicator(close, window=100).sma_indicator()
+            df["SMA200"] = ta_lib.trend.SMAIndicator(close, window=200).sma_indicator()
             df["EMA20"] = ta_lib.trend.EMAIndicator(close, window=20).ema_indicator()
             bb = ta_lib.volatility.BollingerBands(close, window=20, window_dev=2)
             df["BB_upper"] = bb.bollinger_hband()
@@ -343,6 +345,14 @@ def build_instrument_chart(df: pd.DataFrame, name: str, ticker: str,
         fig.add_trace(go.Scatter(x=df.index, y=df["SMA50"], name="SMA 50",
             line=dict(color="#A855F7", width=1.5, dash="dot")), row=1, col=1)
 
+    if "SMA 100" in overlays and "SMA100" in df:
+        fig.add_trace(go.Scatter(x=df.index, y=df["SMA100"], name="SMA 100",
+            line=dict(color="#06B6D4", width=1.5, dash="dot")), row=1, col=1)
+
+    if "SMA 200" in overlays and "SMA200" in df:
+        fig.add_trace(go.Scatter(x=df.index, y=df["SMA200"], name="SMA 200",
+            line=dict(color="#EF4444", width=2, dash="dot")), row=1, col=1)
+
     if "EMA 20" in overlays and "EMA20" in df:
         fig.add_trace(go.Scatter(x=df.index, y=df["EMA20"], name="EMA 20",
             line=dict(color="#EC4899", width=1.5, dash="dot")), row=1, col=1)
@@ -361,10 +371,10 @@ def build_instrument_chart(df: pd.DataFrame, name: str, ticker: str,
                       line_width=0, row=rsi_row, col=1)
         fig.add_hrect(y0=0,  y1=30,  fillcolor="rgba(5,150,105,0.05)",
                       line_width=0, row=rsi_row, col=1)
-        fig.add_hline(y=70, line_dash="dash", line_color="#DC2626",
-                      line_width=1, row=rsi_row, col=1)
-        fig.add_hline(y=30, line_dash="dash", line_color="#059669",
-                      line_width=1, row=rsi_row, col=1)
+        fig.add_hline(y=70, line_dash="dot", line_color="#DC2626",
+                      line_width=1.5, row=rsi_row, col=1)
+        fig.add_hline(y=30, line_dash="dot", line_color="#059669",
+                      line_width=1.5, row=rsi_row, col=1)
         fig.add_trace(go.Scatter(
             x=df.index, y=df["RSI"],
             name=f"RSI({rsi_period})",
@@ -544,7 +554,7 @@ def render_watchlist():
         with opt_c3:
             overlays = st.multiselect(
                 "Overlays",
-                ["SMA 20", "SMA 50", "EMA 20", "Bollinger Bands"],
+                ["SMA 20", "SMA 50", "SMA 100", "SMA 200", "EMA 20", "Bollinger Bands"],
                 default=["SMA 20", "SMA 50"],
                 key=f"ov_{sel['ticker']}",
             )
