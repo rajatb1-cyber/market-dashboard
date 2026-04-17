@@ -1,5 +1,5 @@
 """
-Bloomberg-style watchlist — data fetching, table rendering, config persistence.
+Bloomberg-style watchlist — clickable rows, inline charts, persistent config.
 """
 
 import json
@@ -7,10 +7,11 @@ import os
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 import streamlit as st
 import ta as ta_lib
 import yfinance as yf
-from datetime import datetime
+from datetime import datetime, timedelta, date
 
 # ── Config ─────────────────────────────────────────────────────────────────────
 CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "watchlist_config.json")
@@ -18,6 +19,17 @@ CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "watchlis
 ALL_COLUMNS     = ["Price", "Change %", "Change", "Weekly %", "Monthly %", "RSI", "52W High", "52W Low", "Volume"]
 DEFAULT_COLUMNS = ["Price", "Change %", "Weekly %", "Monthly %", "RSI", "52W High", "52W Low"]
 ASSET_CLASSES   = ["Equity", "FX", "Rates", "Commodity", "Crypto", "Other"]
+
+CHART_TIMEFRAMES = {
+    "1D":  ("1d",  "5m"),
+    "1W":  ("5d",  "15m"),
+    "1M":  ("1mo", "1h"),
+    "3M":  ("3mo", "1d"),
+    "6M":  ("6mo", "1d"),
+    "1Y":  ("1y",  "1d"),
+    "2Y":  ("2y",  "1wk"),
+    "Custom": (None, "1d"),
+}
 
 DEFAULT_INSTRUMENTS = [
     {"name": "S&P 500",      "ticker": "^GSPC",    "class": "Equity"},
@@ -41,7 +53,6 @@ DEFAULT_INSTRUMENTS = [
     {"name": "Ethereum",     "ticker": "ETH-USD",  "class": "Crypto"},
 ]
 
-# Row background tints per asset class
 CLASS_BG = {
     "Equity":    "#F0F5FF",
     "FX":        "#F0FDF4",
@@ -50,8 +61,6 @@ CLASS_BG = {
     "Crypto":    "#FAF5FF",
     "Other":     "#F8FAFC",
 }
-
-# Badge text colours per asset class
 CLASS_FG = {
     "Equity":    "#1D4ED8",
     "FX":        "#047857",
@@ -60,7 +69,6 @@ CLASS_FG = {
     "Crypto":    "#6D28D9",
     "Other":     "#475569",
 }
-
 UP   = "#059669"
 DOWN = "#DC2626"
 MUTE = "#94A3B8"
@@ -72,7 +80,6 @@ def load_config() -> dict:
         if os.path.exists(CONFIG_FILE):
             with open(CONFIG_FILE, "r") as f:
                 cfg = json.load(f)
-            # Back-fill any missing keys
             cfg.setdefault("instruments", DEFAULT_INSTRUMENTS)
             cfg.setdefault("columns",     DEFAULT_COLUMNS)
             return cfg
@@ -89,10 +96,9 @@ def save_config(cfg: dict):
         pass
 
 
-# ── Data fetching ──────────────────────────────────────────────────────────────
+# ── Watchlist data ─────────────────────────────────────────────────────────────
 @st.cache_data(ttl=120)
 def fetch_batch(tickers: tuple) -> dict:
-    """Download 1 year of daily data for all tickers in one yfinance call."""
     if not tickers:
         return {}
     try:
@@ -116,7 +122,7 @@ def fetch_batch(tickers: tuple) -> dict:
         return {}
 
 
-def _safe_float(x) -> float | None:
+def _f(x):
     try:
         v = float(x)
         return None if np.isnan(v) else v
@@ -124,27 +130,23 @@ def _safe_float(x) -> float | None:
         return None
 
 
-def compute_row(inst: dict, df: pd.DataFrame | None, columns: list) -> dict:
-    row: dict = {"Name": inst["name"], "Class": inst["class"], "_ticker": inst["ticker"]}
-
+def compute_row(inst: dict, df, columns: list) -> dict:
+    row = {"Name": inst["name"], "Class": inst["class"], "_ticker": inst["ticker"]}
     if df is None or df.empty:
-        for c in columns:
-            row[c] = None
+        for c in columns: row[c] = None
         return row
 
     close = df["Close"].squeeze().dropna().astype(float)
     if close.empty:
-        for c in columns:
-            row[c] = None
+        for c in columns: row[c] = None
         return row
 
-    last = _safe_float(close.iloc[-1])
+    last = _f(close.iloc[-1])
     if last is None:
-        for c in columns:
-            row[c] = None
+        for c in columns: row[c] = None
         return row
 
-    prev  = _safe_float(close.iloc[-2]) if len(close) > 1 else last
+    prev  = _f(close.iloc[-2]) if len(close) > 1 else last
     d_chg = last - prev if prev else 0
     d_pct = (d_chg / prev * 100) if prev else 0
 
@@ -156,32 +158,31 @@ def compute_row(inst: dict, df: pd.DataFrame | None, columns: list) -> dict:
         elif c == "Change":
             row[c] = d_chg
         elif c == "Weekly %":
-            ref = _safe_float(close.iloc[-6]) if len(close) > 5 else _safe_float(close.iloc[0])
+            ref = _f(close.iloc[-6]) if len(close) > 5 else _f(close.iloc[0])
             row[c] = ((last - ref) / ref * 100) if ref else None
         elif c == "Monthly %":
-            ref = _safe_float(close.iloc[-22]) if len(close) > 21 else _safe_float(close.iloc[0])
+            ref = _f(close.iloc[-22]) if len(close) > 21 else _f(close.iloc[0])
             row[c] = ((last - ref) / ref * 100) if ref else None
         elif c == "RSI":
             try:
                 rsi = ta_lib.momentum.RSIIndicator(close, window=14).rsi().dropna()
-                row[c] = _safe_float(rsi.iloc[-1]) if not rsi.empty else None
+                row[c] = _f(rsi.iloc[-1]) if not rsi.empty else None
             except Exception:
                 row[c] = None
         elif c == "52W High":
-            row[c] = _safe_float(close.max())
+            row[c] = _f(close.max())
         elif c == "52W Low":
-            row[c] = _safe_float(close.min())
+            row[c] = _f(close.min())
         elif c == "Volume":
             try:
                 vol = df["Volume"].squeeze().dropna()
-                row[c] = _safe_float(vol.iloc[-1]) if not vol.empty else None
+                row[c] = _f(vol.iloc[-1]) if not vol.empty else None
             except Exception:
                 row[c] = None
-
     return row
 
 
-# ── Formatting ─────────────────────────────────────────────────────────────────
+# ── Table formatting ───────────────────────────────────────────────────────────
 def _fmt(val, col: str) -> str:
     if val is None or (isinstance(val, float) and np.isnan(val)):
         return "—"
@@ -196,126 +197,189 @@ def _fmt(val, col: str) -> str:
         if val >= 1e6: return f"{val/1e6:.1f}M"
         if val >= 1e3: return f"{val/1e3:.0f}K"
         return f"{val:.0f}"
-    if abs(val) < 10:
-        return f"{val:.4f}"
-    if abs(val) < 10_000:
-        return f"{val:,.2f}"
+    if abs(val) < 10:   return f"{val:.4f}"
+    if abs(val) < 10000: return f"{val:,.2f}"
     return f"{val:,.0f}"
 
 
-def _cell_font_color(val, col: str) -> str:
-    if val is None or (isinstance(val, float) and np.isnan(val)):
-        return MUTE
-    if col in ("Change %", "Change", "Weekly %", "Monthly %"):
-        return UP if val >= 0 else DOWN
-    if col == "RSI":
-        if val > 70: return DOWN
-        if val < 30: return UP
-    return "#1A202C"
+def build_display_df(df_rows: pd.DataFrame, active_cols: list) -> pd.DataFrame:
+    """Build a string-formatted display DataFrame for st.dataframe."""
+    out = pd.DataFrame()
+    out["Name"]  = df_rows["Name"]
+    out["Class"] = df_rows["Class"]
+    for c in active_cols:
+        if c in df_rows.columns:
+            out[c] = df_rows[c].apply(lambda v: _fmt(v, c))
+    return out.reset_index(drop=True)
 
 
-# ── Plotly table ───────────────────────────────────────────────────────────────
-def build_table(df_rows: pd.DataFrame, columns: list) -> go.Figure:
-    display_cols = ["Name", "Class"] + columns
+def style_table(df_display: pd.DataFrame, active_cols: list):
+    """Apply green/red text to change columns via pandas Styler."""
+    pct_cols = [c for c in active_cols if c in ("Change %", "Change", "Weekly %", "Monthly %")]
+    rsi_cols = [c for c in active_cols if c == "RSI"]
 
-    # Collect per-column cell lists
-    cell_vals   = {c: [] for c in display_cols}
-    cell_colors = {c: [] for c in display_cols}
-    cell_fonts  = {c: [] for c in display_cols}
+    def color_change(val: str):
+        if isinstance(val, str) and val.startswith("+"):
+            return f"color: {UP}; font-weight: 600"
+        if isinstance(val, str) and val.startswith("-"):
+            return f"color: {DOWN}; font-weight: 600"
+        return ""
 
-    for _, row in df_rows.iterrows():
-        cls    = row.get("Class", "Other")
-        row_bg = CLASS_BG.get(cls, "#F8FAFC")
+    def color_rsi(val: str):
+        try:
+            v = float(val)
+            if v > 70: return f"color: {DOWN}; font-weight: 600"
+            if v < 30: return f"color: {UP}; font-weight: 600"
+        except Exception:
+            pass
+        return ""
 
-        for c in display_cols:
-            raw = row.get(c)
-            if c == "Name":
-                cell_vals[c].append(f"<b>{raw}</b>" if raw else "—")
-                cell_colors[c].append(row_bg)
-                cell_fonts[c].append("#1A202C")
-            elif c == "Class":
-                cell_vals[c].append(str(raw) if raw else "—")
-                cell_colors[c].append(row_bg)
-                cell_fonts[c].append(CLASS_FG.get(cls, "#475569"))
-            else:
-                cell_vals[c].append(_fmt(raw, c))
-                cell_colors[c].append(row_bg)
-                cell_fonts[c].append(_cell_font_color(raw, c))
+    def color_class(val: str):
+        return f"color: {CLASS_FG.get(val, MUTE)}; font-weight: 600"
 
-    col_widths = []
-    for c in display_cols:
-        if c == "Name":      col_widths.append(130)
-        elif c == "Class":   col_widths.append(85)
-        elif c == "Volume":  col_widths.append(80)
-        elif c == "52W High": col_widths.append(95)
-        elif c == "52W Low":  col_widths.append(95)
-        else:                col_widths.append(90)
+    styler = df_display.style
+    if pct_cols:
+        styler = styler.map(color_change, subset=pct_cols)
+    if rsi_cols:
+        styler = styler.map(color_rsi, subset=rsi_cols)
+    styler = styler.map(color_class, subset=["Class"])
+    styler = styler.set_properties(**{
+        "font-family": "Inter, Segoe UI, sans-serif",
+        "font-size":   "13px",
+    })
+    styler = styler.set_table_styles([
+        {"selector": "th", "props": [
+            ("background-color", "#1B3A6B"),
+            ("color", "white"),
+            ("font-weight", "700"),
+            ("font-size", "12px"),
+            ("padding", "8px 12px"),
+            ("text-align", "left"),
+        ]},
+        {"selector": "td", "props": [("padding", "7px 12px")]},
+        {"selector": "tr:hover td", "props": [("background-color", "#EFF6FF !important")]},
+    ])
+    return styler
 
-    align_header = ["left", "left"] + ["right"] * len(columns)
-    align_cells  = align_header
 
-    fig = go.Figure(data=[go.Table(
-        columnwidth=col_widths,
-        header=dict(
-            values=[f"<b>{c}</b>" for c in display_cols],
-            fill_color="#1B3A6B",
-            font=dict(color="white", size=12, family="Inter, Segoe UI, sans-serif"),
-            align=align_header,
-            height=38,
-            line_color="#2D5A8E",
-        ),
-        cells=dict(
-            values=[cell_vals[c] for c in display_cols],
-            fill_color=[cell_colors[c] for c in display_cols],
-            font=dict(
-                color=[cell_fonts[c] for c in display_cols],
-                size=12,
-                family="Inter, Segoe UI, sans-serif",
-            ),
-            align=align_cells,
-            height=34,
-            line_color="#E2E8F0",
-        ),
-    )])
+# ── Chart for selected instrument ──────────────────────────────────────────────
+@st.cache_data(ttl=60)
+def fetch_chart_data(ticker: str, period: str | None, interval: str,
+                     start: str | None = None, end: str | None = None) -> pd.DataFrame:
+    try:
+        if start and end:
+            df = yf.download(ticker, start=start, end=end, interval=interval,
+                             auto_adjust=True, progress=False)
+        else:
+            df = yf.download(ticker, period=period, interval=interval,
+                             auto_adjust=True, progress=False)
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.get_level_values(0)
+        df.dropna(inplace=True)
+        if not df.empty:
+            close = df["Close"].squeeze().astype(float)
+            df["SMA20"] = ta_lib.trend.SMAIndicator(close, window=20).sma_indicator()
+            df["SMA50"] = ta_lib.trend.SMAIndicator(close, window=50).sma_indicator()
+            df["RSI"]   = ta_lib.momentum.RSIIndicator(close, window=14).rsi()
+        return df
+    except Exception:
+        return pd.DataFrame()
 
-    n_rows = len(df_rows)
+
+def build_instrument_chart(df: pd.DataFrame, name: str, ticker: str) -> go.Figure:
+    fig = make_subplots(
+        rows=3, cols=1,
+        shared_xaxes=True,
+        vertical_spacing=0.03,
+        row_heights=[0.60, 0.20, 0.20],
+    )
+
+    # Candlestick
+    fig.add_trace(go.Candlestick(
+        x=df.index,
+        open=df["Open"], high=df["High"],
+        low=df["Low"],   close=df["Close"],
+        name="Price",
+        increasing_line_color="#059669", decreasing_line_color="#DC2626",
+        increasing_fillcolor="#059669",  decreasing_fillcolor="#DC2626",
+    ), row=1, col=1)
+
+    if "SMA20" in df:
+        fig.add_trace(go.Scatter(x=df.index, y=df["SMA20"], name="SMA 20",
+            line=dict(color="#D97706", width=1.5)), row=1, col=1)
+    if "SMA50" in df:
+        fig.add_trace(go.Scatter(x=df.index, y=df["SMA50"], name="SMA 50",
+            line=dict(color="#2563EB", width=1.5)), row=1, col=1)
+
+    # Volume
+    if "Volume" in df.columns:
+        vol = df["Volume"].squeeze()
+        vol_colors = [
+            "rgba(5,150,105,0.3)" if c >= o else "rgba(220,38,38,0.3)"
+            for o, c in zip(df["Open"], df["Close"])
+        ]
+        fig.add_trace(go.Bar(x=df.index, y=vol, name="Volume",
+            marker_color=vol_colors, showlegend=False), row=2, col=1)
+
+    # RSI
+    if "RSI" in df:
+        fig.add_hrect(y0=70, y1=100, fillcolor="rgba(220,38,38,0.05)",
+                      line_width=0, row=3, col=1)
+        fig.add_hrect(y0=0,  y1=30,  fillcolor="rgba(5,150,105,0.05)",
+                      line_width=0, row=3, col=1)
+        fig.add_hline(y=70, line_dash="dash", line_color="#DC2626",
+                      line_width=1, row=3, col=1)
+        fig.add_hline(y=30, line_dash="dash", line_color="#059669",
+                      line_width=1, row=3, col=1)
+        fig.add_trace(go.Scatter(x=df.index, y=df["RSI"], name="RSI(14)",
+            line=dict(color="#2563EB", width=1.8),
+            fill="tozeroy", fillcolor="rgba(37,99,235,0.05)"), row=3, col=1)
+        fig.update_yaxes(range=[0, 100], row=3, col=1,
+                         tickfont=dict(size=10), gridcolor="#E8EDF5")
+
     fig.update_layout(
-        margin=dict(l=0, r=0, t=0, b=0),
-        paper_bgcolor="#FFFFFF",
-        height=max(200, 38 + 34 * n_rows + 16),
+        title=dict(
+            text=f"<b>{name}</b>  <span style='font-size:13px;color:#64748B'>({ticker})</span>",
+            font=dict(size=16, color="#1A202C", family="Inter, Segoe UI, sans-serif"),
+        ),
+        xaxis_rangeslider_visible=False,
+        height=580,
+        paper_bgcolor="#FFFFFF", plot_bgcolor="#FAFBFD",
+        font=dict(color="#1A202C", family="Inter, Segoe UI, sans-serif"),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02,
+                    xanchor="right", x=1, font=dict(size=11),
+                    bgcolor="rgba(255,255,255,0.9)", bordercolor="#E2E8F0", borderwidth=1),
+        margin=dict(l=10, r=10, t=60, b=10),
+        hovermode="x unified",
+        hoverlabel=dict(bgcolor="#FFFFFF", bordercolor="#E2E8F0",
+                        font=dict(color="#1A202C", size=12)),
     )
+    fig.update_xaxes(gridcolor="#E8EDF5", zeroline=False, linecolor="#E2E8F0",
+                     showspikes=True, spikecolor="#94A3B8", spikethickness=1)
+    fig.update_yaxes(gridcolor="#E8EDF5", zeroline=False, linecolor="#E2E8F0",
+                     showspikes=True, spikecolor="#94A3B8", spikethickness=1, row=1, col=1)
+    fig.update_yaxes(gridcolor="#E8EDF5", zeroline=False, row=2, col=1,
+                     tickfont=dict(size=10))
     return fig
-
-
-# ── Legend bar ────────────────────────────────────────────────────────────────
-def render_legend():
-    badges = " &nbsp; ".join(
-        f'<span style="background:{CLASS_BG[c]};color:{CLASS_FG[c]};'
-        f'border:1px solid {CLASS_FG[c]}33;border-radius:4px;'
-        f'padding:2px 8px;font-size:11px;font-weight:600;">{c}</span>'
-        for c in ASSET_CLASSES[:-1]
-    )
-    st.markdown(badges, unsafe_allow_html=True)
 
 
 # ── Main render ────────────────────────────────────────────────────────────────
 def render_watchlist():
-    # ── Load config into session state once ──────────────────────────────────
     if "wl_config" not in st.session_state:
         st.session_state.wl_config = load_config()
+    if "wl_selected" not in st.session_state:
+        st.session_state.wl_selected = None
 
     cfg         = st.session_state.wl_config
     instruments = cfg["instruments"]
     sel_cols    = cfg["columns"]
 
-    # ── Control bar ───────────────────────────────────────────────────────────
+    # ── Controls ──────────────────────────────────────────────────────────────
     c1, c2, c3, c4 = st.columns([3, 2, 2, 1])
 
     with c1:
-        new_cols = st.multiselect(
-            "Columns", ALL_COLUMNS, default=sel_cols,
-            help="Choose which metrics to display",
-        )
+        new_cols = st.multiselect("Columns", ALL_COLUMNS, default=sel_cols,
+                                  help="Choose which metrics to display")
         if set(new_cols) != set(sel_cols):
             cfg["columns"] = new_cols
             save_config(cfg)
@@ -324,12 +388,10 @@ def render_watchlist():
     active_cols = new_cols if new_cols else sel_cols
 
     with c2:
-        sort_options = ["Name", "Class"] + active_cols
-        sort_col = st.selectbox("Sort by", sort_options)
+        sort_col = st.selectbox("Sort by", ["Name", "Class"] + active_cols)
 
     with c3:
-        sort_dir = st.radio("Order", ["↑ Ascending", "↓ Descending"],
-                            horizontal=True, label_visibility="visible")
+        sort_dir = st.radio("Order", ["↑ Asc", "↓ Desc"], horizontal=True)
         sort_asc = sort_dir.startswith("↑")
 
     with c4:
@@ -342,39 +404,117 @@ def render_watchlist():
     # ── Asset class filter pills ──────────────────────────────────────────────
     present_classes = sorted({i["class"] for i in instruments})
     selected_classes = st.pills(
-        "Filter by asset class",
-        options=present_classes,
-        default=present_classes,
-        selection_mode="multi",
-        help="Click to show/hide asset classes",
+        "Filter by asset class", options=present_classes,
+        default=present_classes, selection_mode="multi",
     )
-    # Fall back to all if nothing selected
     if not selected_classes:
         selected_classes = present_classes
 
-    st.markdown("<div style='margin-top:4px'></div>", unsafe_allow_html=True)
-
-    # ── Fetch and build rows ──────────────────────────────────────────────────
+    # ── Fetch data ────────────────────────────────────────────────────────────
     tickers = tuple(i["ticker"] for i in instruments)
-
-    with st.spinner("Loading watchlist data…"):
+    with st.spinner("Loading watchlist…"):
         batch = fetch_batch(tickers)
 
     rows = [compute_row(inst, batch.get(inst["ticker"]), active_cols) for inst in instruments]
     df_rows = pd.DataFrame(rows)
 
-    # Filter by selected asset classes
+    # Filter & sort
     df_rows = df_rows[df_rows["Class"].isin(selected_classes)]
-
-    # Sort
     if sort_col in df_rows.columns:
+        # Sort on numeric values before formatting
         df_rows = df_rows.sort_values(sort_col, ascending=sort_asc, na_position="last")
 
-    # ── Render table ─────────────────────────────────────────────────────────
-    st.plotly_chart(build_table(df_rows, active_cols), use_container_width=True)
+    # ── Table ─────────────────────────────────────────────────────────────────
+    st.markdown(
+        "<p style='font-size:11px;color:#94A3B8;margin-bottom:4px'>"
+        "👆 Click a row to chart it</p>",
+        unsafe_allow_html=True,
+    )
 
-    st.caption(f"Last updated: {datetime.now().strftime('%H:%M:%S')}  ·  "
-               f"{len(instruments)} instruments  ·  Data: Yahoo Finance")
+    df_display = build_display_df(df_rows, active_cols)
+    styled     = style_table(df_display, active_cols)
+
+    event = st.dataframe(
+        styled,
+        use_container_width=True,
+        hide_index=True,
+        on_select="rerun",
+        selection_mode="single-row",
+        height=min(600, 38 + 35 * len(df_display)),
+    )
+
+    st.caption(
+        f"Last updated: {datetime.now().strftime('%H:%M:%S')}  ·  "
+        f"{len(df_rows)} instruments shown  ·  Data: Yahoo Finance"
+    )
+
+    # ── Inline chart ─────────────────────────────────────────────────────────
+    selected_rows = event.selection.rows if event and event.selection else []
+    if selected_rows:
+        row_idx  = selected_rows[0]
+        row_data = df_display.iloc[row_idx]
+        inst_name = row_data["Name"]
+
+        # Look up ticker
+        inst = next((i for i in instruments if i["name"] == inst_name), None)
+        if inst:
+            st.session_state.wl_selected = inst
+
+    sel = st.session_state.wl_selected
+    if sel:
+        st.markdown("---")
+        st.markdown(
+            f"<h4 style='color:#1B3A6B;margin-bottom:4px'>"
+            f"{sel['name']} "
+            f"<span style='font-size:13px;color:#64748B;font-weight:400'>"
+            f"({sel['ticker']})</span></h4>",
+            unsafe_allow_html=True,
+        )
+
+        # Timeframe selector
+        tf_cols = st.columns([6, 1])
+        with tf_cols[0]:
+            tf = st.segmented_control(
+                "Timeframe",
+                options=list(CHART_TIMEFRAMES.keys()),
+                default="1M",
+                key=f"tf_{sel['ticker']}",
+            )
+        with tf_cols[1]:
+            if st.button("✕ Close", key="close_chart"):
+                st.session_state.wl_selected = None
+                st.rerun()
+
+        # Custom date range
+        if tf == "Custom":
+            d_col1, d_col2 = st.columns(2)
+            with d_col1:
+                start_date = st.date_input("From", value=date.today() - timedelta(days=180),
+                                           max_value=date.today() - timedelta(days=2))
+            with d_col2:
+                end_date = st.date_input("To", value=date.today(),
+                                         min_value=start_date + timedelta(days=1),
+                                         max_value=date.today())
+            period   = None
+            interval = "1d"
+            start_str = str(start_date)
+            end_str   = str(end_date)
+        else:
+            period, interval = CHART_TIMEFRAMES[tf]
+            start_str = end_str = None
+
+        with st.spinner(f"Loading {sel['name']} chart…"):
+            df_chart = fetch_chart_data(
+                sel["ticker"], period, interval, start_str, end_str
+            )
+
+        if not df_chart.empty:
+            st.plotly_chart(
+                build_instrument_chart(df_chart, sel["name"], sel["ticker"]),
+                use_container_width=True,
+            )
+        else:
+            st.warning("No chart data available for this instrument / timeframe.")
 
     st.markdown("---")
 
@@ -391,13 +531,12 @@ def render_watchlist():
                 ticker = new_ticker.upper().strip()
                 if name and ticker:
                     entry = {"name": name, "ticker": ticker, "class": new_class}
-                    existing = [i["ticker"] for i in cfg["instruments"]]
-                    if ticker not in existing:
+                    if ticker not in [i["ticker"] for i in cfg["instruments"]]:
                         cfg["instruments"].append(entry)
                         save_config(cfg)
                         st.session_state.wl_config = cfg
                         st.cache_data.clear()
-                        st.success(f"✓ Added **{name}** ({ticker})")
+                        st.success(f"✓ Added {name} ({ticker})")
                         st.rerun()
                     else:
                         st.warning(f"{ticker} is already in the watchlist.")
@@ -407,7 +546,7 @@ def render_watchlist():
     with col_remove:
         with st.expander("➖  Remove instruments"):
             names = [i["name"] for i in cfg["instruments"]]
-            to_remove = st.multiselect("Select instruments to remove", names)
+            to_remove = st.multiselect("Select to remove", names)
             if st.button("Remove selected", type="secondary", key="btn_remove"):
                 if to_remove:
                     cfg["instruments"] = [i for i in cfg["instruments"]
@@ -415,7 +554,6 @@ def render_watchlist():
                     save_config(cfg)
                     st.session_state.wl_config = cfg
                     st.cache_data.clear()
-                    st.success(f"Removed {len(to_remove)} instrument(s).")
                     st.rerun()
                 else:
                     st.warning("Select at least one instrument to remove.")
