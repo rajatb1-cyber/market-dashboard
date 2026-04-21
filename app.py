@@ -4,8 +4,10 @@ import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import ta as ta_lib
-from datetime import datetime
+from datetime import datetime, date, timedelta
 import time
+import json
+import urllib.request
 import finnhub
 from watchlist import render_watchlist
 
@@ -119,10 +121,16 @@ INDICES = {
 }
 
 BONDS = {
-    "US 2Y":  "^IRX",
-    "US 5Y":  "^FVX",
-    "US 10Y": "^TNX",
-    "US 30Y": "^TYX",
+    "US 2Y":     "^IRX",
+    "US 5Y":     "^FVX",
+    "US 10Y":    "^TNX",
+    "US 30Y":    "^TYX",
+    "UK 10Y":    "^GUKG10",
+}
+
+# Tickers sourced from FRED instead of yfinance (Yahoo no longer carries them)
+FRED_MAP = {
+    "^GUKG10": "IRLTLT01GBD156N",   # UK 10-Year Government Bond Yield (daily, OECD)
 }
 
 COMMODITIES = {
@@ -161,6 +169,7 @@ TICKER_OPTIONS = {
     "US 5Y Treasury (^FVX)":  "^FVX",
     "US 10Y Treasury (^TNX)": "^TNX",
     "US 30Y Treasury (^TYX)": "^TYX",
+    "UK 10Y Gilt (^GUKG10)":  "^GUKG10",
     # Commodities
     "Gold (GC=F)":         "GC=F",
     "Silver (SI=F)":       "SI=F",
@@ -225,10 +234,76 @@ COLORS = {
     "signal_line": "#F59E0B",   # amber
 }
 
+# ── FRED helpers ───────────────────────────────────────────────────────────────
+@st.cache_data(ttl=3600)
+def _fetch_fred_df(series_id: str, start: str = "2020-01-01") -> pd.DataFrame:
+    """Fetch a FRED time series and return as an OHLCV-shaped DataFrame."""
+    try:
+        key = st.secrets["FRED_KEY"]
+    except Exception:
+        return pd.DataFrame()
+    try:
+        url = (
+            "https://api.stlouisfed.org/fred/series/observations"
+            f"?series_id={series_id}&api_key={key}&file_type=json"
+            f"&sort_order=asc&observation_start={start}"
+        )
+        with urllib.request.urlopen(url, timeout=10) as r:
+            obs = json.loads(r.read().decode())["observations"]
+        rows = [(o["date"], float(o["value"])) for o in obs if o["value"] != "."]
+        if not rows:
+            return pd.DataFrame()
+        df = pd.DataFrame(rows, columns=["Date", "Close"])
+        df["Date"] = pd.to_datetime(df["Date"])
+        df.set_index("Date", inplace=True)
+        df["Open"] = df["Close"]
+        df["High"] = df["Close"]
+        df["Low"]  = df["Close"]
+        df["Volume"] = 0
+        return df
+    except Exception:
+        return pd.DataFrame()
+
+
+def _fred_period_start(period: str) -> str:
+    """Convert a yfinance-style period string to a FRED observation_start date."""
+    days = {"1d": 60, "5d": 60, "1mo": 90, "3mo": 100,
+            "6mo": 190, "1y": 370, "2y": 740, "5y": 1830}
+    return (date.today() - timedelta(days=days.get(period, 370))).isoformat()
+
+
 # ── Data helpers ───────────────────────────────────────────────────────────────
+@st.cache_data(ttl=3600)
+def fetch_fred_quote(ticker: str) -> dict:
+    """Latest quote for a FRED-sourced ticker (daily data, updates once a day)."""
+    series_id = FRED_MAP.get(ticker)
+    if not series_id:
+        return {}
+    df = _fetch_fred_df(series_id, start=_fred_period_start("1mo"))
+    if df.empty:
+        return {}
+    close = df["Close"].dropna()
+    if len(close) < 2:
+        return {}
+    price  = float(close.iloc[-1])
+    prev   = float(close.iloc[-2])
+    change = price - prev
+    pct    = (change / prev * 100) if prev else 0
+    return {
+        "price":      price,
+        "prev_close": prev,
+        "change":     change,
+        "change_pct": pct,
+        "high":  None, "low": None, "open": None, "volume": None,
+        "source": "FRED (daily)",
+    }
+
+
 @st.cache_data(ttl=15)
 def fetch_realtime_quote(ticker: str) -> dict:
-    """Real-time quote via Finnhub for stocks; fallback to yfinance."""
+    """Real-time quote via Finnhub for stocks; fallback to yfinance or FRED."""
+    if ticker in FRED_MAP:
+        return fetch_fred_quote(ticker)
     fh = get_finnhub()
     # Finnhub only supports plain stock tickers (no ^ or = or -)
     use_finnhub = fh and not any(c in ticker for c in ["^", "=", "-", "."])
@@ -258,7 +333,9 @@ def fetch_realtime_quote(ticker: str) -> dict:
 
 @st.cache_data(ttl=60)
 def fetch_yf_quote(ticker: str) -> dict:
-    """Quote via yfinance (15-min delay for stocks)."""
+    """Quote via yfinance (15-min delay for stocks). Falls back to FRED if needed."""
+    if ticker in FRED_MAP:
+        return fetch_fred_quote(ticker)
     try:
         info  = yf.Ticker(ticker).fast_info
         price = info.last_price
@@ -284,14 +361,20 @@ def fetch_yf_quote(ticker: str) -> dict:
 
 @st.cache_data(ttl=60)
 def fetch_history(ticker: str, period: str, interval: str) -> pd.DataFrame:
-    """OHLCV + technical indicators via yfinance."""
-    df = yf.download(ticker, period=period, interval=interval,
-                     auto_adjust=True, progress=False)
-    if df.empty:
-        return df
-    if isinstance(df.columns, pd.MultiIndex):
-        df.columns = df.columns.get_level_values(0)
-    df.dropna(inplace=True)
+    """OHLCV + technical indicators via yfinance (or FRED for select tickers)."""
+    if ticker in FRED_MAP:
+        df = _fetch_fred_df(FRED_MAP[ticker], start=_fred_period_start(period))
+        if df.empty:
+            return df
+        df.dropna(inplace=True)
+    else:
+        df = yf.download(ticker, period=period, interval=interval,
+                         auto_adjust=True, progress=False)
+        if df.empty:
+            return df
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.get_level_values(0)
+        df.dropna(inplace=True)
 
     close = df["Close"].squeeze()
 

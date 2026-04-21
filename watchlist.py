@@ -4,6 +4,7 @@ Bloomberg-style watchlist — clickable rows, inline charts, persistent config.
 
 import json
 import os
+import urllib.request
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
@@ -74,6 +75,47 @@ DOWN = "#DC2626"
 MUTE = "#94A3B8"
 
 
+# ── FRED helpers ───────────────────────────────────────────────────────────────
+FRED_MAP = {
+    "^GUKG10": "IRLTLT01GBD156N",   # UK 10-Year Government Bond Yield (daily, OECD)
+}
+
+
+@st.cache_data(ttl=3600)
+def _fetch_fred_df(series_id: str, start: str = "2020-01-01") -> pd.DataFrame:
+    try:
+        key = st.secrets["FRED_KEY"]
+    except Exception:
+        return pd.DataFrame()
+    try:
+        url = (
+            "https://api.stlouisfed.org/fred/series/observations"
+            f"?series_id={series_id}&api_key={key}&file_type=json"
+            f"&sort_order=asc&observation_start={start}"
+        )
+        with urllib.request.urlopen(url, timeout=10) as r:
+            obs = json.loads(r.read().decode())["observations"]
+        rows = [(o["date"], float(o["value"])) for o in obs if o["value"] != "."]
+        if not rows:
+            return pd.DataFrame()
+        df = pd.DataFrame(rows, columns=["Date", "Close"])
+        df["Date"] = pd.to_datetime(df["Date"])
+        df.set_index("Date", inplace=True)
+        df["Open"] = df["Close"]
+        df["High"] = df["Close"]
+        df["Low"]  = df["Close"]
+        df["Volume"] = 0
+        return df
+    except Exception:
+        return pd.DataFrame()
+
+
+def _fred_period_start(period: str | None) -> str:
+    days = {"1d": 60, "5d": 60, "1mo": 90, "3mo": 100,
+            "6mo": 190, "1y": 370, "2y": 740, "5y": 1830}
+    return (date.today() - timedelta(days=days.get(period or "1y", 370))).isoformat()
+
+
 # ── Config persistence ─────────────────────────────────────────────────────────
 def load_config() -> dict:
     try:
@@ -101,15 +143,28 @@ def save_config(cfg: dict):
 def fetch_batch(tickers: tuple) -> dict:
     if not tickers:
         return {}
+
+    out = {}
+
+    # FRED tickers — fetched individually (not via yfinance)
+    for tkr in tickers:
+        if tkr in FRED_MAP:
+            df = _fetch_fred_df(FRED_MAP[tkr], start=_fred_period_start("1y"))
+            if not df.empty and len(df) > 5:
+                out[tkr] = df
+
+    yf_tickers = [t for t in tickers if t not in FRED_MAP]
+    if not yf_tickers:
+        return out
+
     try:
         raw = yf.download(
-            list(tickers), period="1y", interval="1d",
+            yf_tickers, period="1y", interval="1d",
             auto_adjust=True, progress=False, group_by="ticker",
         )
-        out = {}
-        for tkr in tickers:
+        for tkr in yf_tickers:
             try:
-                df = raw[tkr].copy() if len(tickers) > 1 else raw.copy()
+                df = raw[tkr].copy() if len(yf_tickers) > 1 else raw.copy()
                 if isinstance(df.columns, pd.MultiIndex):
                     df.columns = df.columns.get_level_values(0)
                 df.dropna(how="all", inplace=True)
@@ -117,9 +172,10 @@ def fetch_batch(tickers: tuple) -> dict:
                     out[tkr] = df
             except Exception:
                 pass
-        return out
     except Exception:
-        return {}
+        pass
+
+    return out
 
 
 def _f(x):
@@ -268,15 +324,25 @@ def fetch_chart_data(ticker: str, period: str | None, interval: str,
                      rsi_period: int = 14,
                      start: str | None = None, end: str | None = None) -> pd.DataFrame:
     try:
-        if start and end:
+        # FRED-sourced tickers: always daily data regardless of requested interval
+        if ticker in FRED_MAP:
+            fred_start = start if start else _fred_period_start(period)
+            df = _fetch_fred_df(FRED_MAP[ticker], start=fred_start)
+            if not df.empty and end:
+                df = df[df.index <= pd.Timestamp(end)]
+            df.dropna(inplace=True)
+        elif start and end:
             df = yf.download(ticker, start=start, end=end, interval=interval,
                              auto_adjust=True, progress=False)
+            if isinstance(df.columns, pd.MultiIndex):
+                df.columns = df.columns.get_level_values(0)
+            df.dropna(inplace=True)
         else:
             df = yf.download(ticker, period=period, interval=interval,
                              auto_adjust=True, progress=False)
-        if isinstance(df.columns, pd.MultiIndex):
-            df.columns = df.columns.get_level_values(0)
-        df.dropna(inplace=True)
+            if isinstance(df.columns, pd.MultiIndex):
+                df.columns = df.columns.get_level_values(0)
+            df.dropna(inplace=True)
         if not df.empty:
             close = df["Close"].squeeze().astype(float)
             df["SMA20"]  = ta_lib.trend.SMAIndicator(close, window=20).sma_indicator()
