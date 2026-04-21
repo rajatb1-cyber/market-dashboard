@@ -77,7 +77,7 @@ MUTE = "#94A3B8"
 
 # ── FRED helpers ───────────────────────────────────────────────────────────────
 FRED_MAP = {
-    "^GUKG10": "IRLTLT01GBD156N",   # UK 10-Year Government Bond Yield (daily, OECD)
+    "^GUKG10": "IRLTLT01GBM156N",   # UK 10-Year Government Bond Yield (monthly, OECD via FRED)
 }
 
 

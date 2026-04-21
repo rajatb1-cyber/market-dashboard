@@ -130,7 +130,7 @@ BONDS = {
 
 # Tickers sourced from FRED instead of yfinance (Yahoo no longer carries them)
 FRED_MAP = {
-    "^GUKG10": "IRLTLT01GBD156N",   # UK 10-Year Government Bond Yield (daily, OECD)
+    "^GUKG10": "IRLTLT01GBM156N",   # UK 10-Year Government Bond Yield (monthly, OECD via FRED)
 }
 
 COMMODITIES = {
