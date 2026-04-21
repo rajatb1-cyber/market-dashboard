@@ -330,27 +330,35 @@ def get_rangebreaks(df: pd.DataFrame) -> list:
     idx = pd.DatetimeIndex(df.index)
     delta_seconds = (idx[1] - idx[0]).total_seconds()
 
+    # Strip timezone so pd.date_range comparisons always work
+    # tz_localize(None) removes the tz label without any UTC conversion
+    try:
+        idx_naive = idx.tz_localize(None) if idx.tz is not None else idx
+    except Exception:
+        idx_naive = idx
+
     if delta_seconds >= 86_400:  # daily or weekly — also detect holidays
         try:
-            # Strip timezone before comparison — yfinance returns tz-aware timestamps
-            # for commodities/FX which causes bdate_range.difference() to fail silently
-            if idx.tz is not None:
-                idx_naive = idx.tz_convert("UTC").tz_localize(None)
-            else:
-                idx_naive = idx
             dates = idx_naive.normalize()
-            # Use all calendar days (not just bdays) to catch weekends + holidays together
+            # All calendar days in range; difference gives weekends + holidays together
             all_days = pd.date_range(dates.min(), dates.max(), freq="D")
             missing = all_days.difference(dates)
             if len(missing):
                 breaks.append(dict(values=missing.strftime("%Y-%m-%d").tolist()))
         except Exception:
             pass
-    else:  # intraday — also hide overnight hours if the data suggests regular sessions
+    else:  # intraday — detect missing trading days AND overnight gaps
         try:
-            hours = idx.hour + idx.minute / 60
+            # Unique calendar dates present in the data
+            dates_present = pd.DatetimeIndex(sorted(set(idx_naive.normalize())))
+            # Missing weekdays = market holidays (weekends already covered by bounds above)
+            all_wdays = pd.bdate_range(dates_present.min(), dates_present.max())
+            missing_holidays = all_wdays.difference(dates_present)
+            if len(missing_holidays):
+                breaks.append(dict(values=missing_holidays.strftime("%Y-%m-%d").tolist()))
+            # Hide overnight hours for fixed-session instruments (equities ~6.5h window)
+            hours = idx_naive.hour + idx_naive.minute / 60
             lo, hi = hours.min(), hours.max()
-            # Only apply hour breaks when data fits a recognisable session window
             if hi - lo < 18:
                 breaks.append(dict(bounds=[hi + 0.25, lo - 0.25], pattern="hour"))
         except Exception:
