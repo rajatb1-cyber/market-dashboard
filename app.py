@@ -319,50 +319,46 @@ def fetch_history(ticker: str, period: str, interval: str) -> pd.DataFrame:
 # ── Chart helpers ──────────────────────────────────────────────────────────────
 def get_rangebreaks(df: pd.DataFrame) -> list:
     """
-    Build Plotly rangebreaks that hide weekends and market holidays.
-    Works for both daily and intraday data.
+    Build Plotly rangebreaks by detecting every gap directly from the data.
+    No holiday calendar needed — works for any asset, interval, or timezone.
+    A gap between consecutive bars that is >1.5x the normal interval is hidden.
     """
-    breaks = [dict(bounds=["sat", "mon"])]  # always skip weekends
-
     if df.empty or len(df) < 2:
-        return breaks
+        return []
 
     idx = pd.DatetimeIndex(df.index)
-    delta_seconds = (idx[1] - idx[0]).total_seconds()
 
-    # Strip timezone so pd.date_range comparisons always work
-    # tz_localize(None) removes the tz label without any UTC conversion
+    # Strip timezone for arithmetic — tz_localize(None) removes label without conversion
     try:
         idx_naive = idx.tz_localize(None) if idx.tz is not None else idx
     except Exception:
         idx_naive = idx
 
-    if delta_seconds >= 86_400:  # daily or weekly — also detect holidays
-        try:
-            dates = idx_naive.normalize()
-            # All calendar days in range; difference gives weekends + holidays together
-            all_days = pd.date_range(dates.min(), dates.max(), freq="D")
-            missing = all_days.difference(dates)
-            if len(missing):
-                breaks.append(dict(values=missing.strftime("%Y-%m-%d").tolist()))
-        except Exception:
-            pass
-    else:  # intraday — detect missing trading days AND overnight gaps
-        try:
-            # Unique calendar dates present in the data
-            dates_present = pd.DatetimeIndex(sorted(set(idx_naive.normalize())))
-            # Missing weekdays = market holidays (weekends already covered by bounds above)
-            all_wdays = pd.bdate_range(dates_present.min(), dates_present.max())
-            missing_holidays = all_wdays.difference(dates_present)
-            if len(missing_holidays):
-                breaks.append(dict(values=missing_holidays.strftime("%Y-%m-%d").tolist()))
-            # Hide overnight hours for fixed-session instruments (equities ~6.5h window)
-            hours = idx_naive.hour + idx_naive.minute / 60
-            lo, hi = hours.min(), hours.max()
-            if hi - lo < 18:
-                breaks.append(dict(bounds=[hi + 0.25, lo - 0.25], pattern="hour"))
-        except Exception:
-            pass
+    # Infer the expected bar spacing = smallest positive diff between consecutive bars
+    try:
+        diffs = idx_naive.to_series().diff().dt.total_seconds().dropna()
+        pos = diffs[diffs > 0]
+        if pos.empty:
+            return []
+        expected = pos.min()
+    except Exception:
+        return []
+
+    threshold = expected * 1.5
+    breaks = []
+
+    try:
+        for i in range(len(idx_naive) - 1):
+            gap = (idx_naive[i + 1] - idx_naive[i]).total_seconds()
+            if gap > threshold:
+                gap_start = idx_naive[i] + pd.Timedelta(seconds=expected)
+                gap_end   = idx_naive[i + 1]
+                breaks.append(dict(bounds=[
+                    gap_start.strftime("%Y-%m-%dT%H:%M:%S"),
+                    gap_end.strftime("%Y-%m-%dT%H:%M:%S"),
+                ]))
+    except Exception:
+        pass
 
     return breaks
 

@@ -294,39 +294,39 @@ def fetch_chart_data(ticker: str, period: str | None, interval: str,
 
 
 def get_rangebreaks(df: pd.DataFrame) -> list:
-    breaks = [dict(bounds=["sat", "mon"])]
+    """
+    Detect every gap directly from the data and return Plotly rangebreaks.
+    No holiday calendar needed — works for any asset, interval, or timezone.
+    """
     if df.empty or len(df) < 2:
-        return breaks
+        return []
     idx = pd.DatetimeIndex(df.index)
-    delta_seconds = (idx[1] - idx[0]).total_seconds()
-    # Strip timezone so pd.date_range comparisons always work
     try:
         idx_naive = idx.tz_localize(None) if idx.tz is not None else idx
     except Exception:
         idx_naive = idx
-    if delta_seconds >= 86_400:
-        try:
-            dates = idx_naive.normalize()
-            all_days = pd.date_range(dates.min(), dates.max(), freq="D")
-            missing = all_days.difference(dates)
-            if len(missing):
-                breaks.append(dict(values=missing.strftime("%Y-%m-%d").tolist()))
-        except Exception:
-            pass
-    else:
-        try:
-            # Missing weekdays = market holidays (weekends covered by bounds above)
-            dates_present = pd.DatetimeIndex(sorted(set(idx_naive.normalize())))
-            all_wdays = pd.bdate_range(dates_present.min(), dates_present.max())
-            missing_holidays = all_wdays.difference(dates_present)
-            if len(missing_holidays):
-                breaks.append(dict(values=missing_holidays.strftime("%Y-%m-%d").tolist()))
-            hours = idx_naive.hour + idx_naive.minute / 60
-            lo, hi = hours.min(), hours.max()
-            if hi - lo < 18:
-                breaks.append(dict(bounds=[hi + 0.25, lo - 0.25], pattern="hour"))
-        except Exception:
-            pass
+    try:
+        diffs = idx_naive.to_series().diff().dt.total_seconds().dropna()
+        pos = diffs[diffs > 0]
+        if pos.empty:
+            return []
+        expected = pos.min()
+    except Exception:
+        return []
+    threshold = expected * 1.5
+    breaks = []
+    try:
+        for i in range(len(idx_naive) - 1):
+            gap = (idx_naive[i + 1] - idx_naive[i]).total_seconds()
+            if gap > threshold:
+                gap_start = idx_naive[i] + pd.Timedelta(seconds=expected)
+                gap_end   = idx_naive[i + 1]
+                breaks.append(dict(bounds=[
+                    gap_start.strftime("%Y-%m-%dT%H:%M:%S"),
+                    gap_end.strftime("%Y-%m-%dT%H:%M:%S"),
+                ]))
+    except Exception:
+        pass
     return breaks
 
 
