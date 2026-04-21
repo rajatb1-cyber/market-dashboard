@@ -125,7 +125,6 @@ BONDS = {
     "US 5Y":     "^FVX",
     "US 10Y":    "^TNX",
     "US 30Y":    "^TYX",
-    "UK 10Y":    "^GUKG10",
 }
 
 # Tickers sourced from FRED instead of yfinance (Yahoo no longer carries them)
@@ -169,7 +168,6 @@ TICKER_OPTIONS = {
     "US 5Y Treasury (^FVX)":  "^FVX",
     "US 10Y Treasury (^TNX)": "^TNX",
     "US 30Y Treasury (^TYX)": "^TYX",
-    "UK 10Y Gilt (^GUKG10)":  "^GUKG10",
     # Commodities
     "Gold (GC=F)":         "GC=F",
     "Silver (SI=F)":       "SI=F",

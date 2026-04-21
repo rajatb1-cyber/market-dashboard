@@ -12,7 +12,6 @@
     {"name": "US 10Y",       "ticker": "^TNX",     "class": "Rates"},
     {"name": "US 2Y",        "ticker": "^IRX",     "class": "Rates"},
     {"name": "US 30Y",       "ticker": "^TYX",     "class": "Rates"},
-    {"name": "UK 10Y Gilt",  "ticker": "^GUKG10",  "class": "Rates"},
     {"name": "Gold",         "ticker": "GC=F",     "class": "Commodity"},
     {"name": "WTI Oil",      "ticker": "CL=F",     "class": "Commodity"},
     {"name": "Brent Crude",  "ticker": "BZ=F",     "class": "Commodity"},
