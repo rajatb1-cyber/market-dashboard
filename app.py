@@ -332,11 +332,18 @@ def get_rangebreaks(df: pd.DataFrame) -> list:
 
     if delta_seconds >= 86_400:  # daily or weekly — also detect holidays
         try:
-            dates = idx.normalize()
-            all_bdays = pd.bdate_range(dates.min(), dates.max())
-            holidays = all_bdays.difference(dates)
-            if len(holidays):
-                breaks.append(dict(values=holidays.strftime("%Y-%m-%d").tolist()))
+            # Strip timezone before comparison — yfinance returns tz-aware timestamps
+            # for commodities/FX which causes bdate_range.difference() to fail silently
+            if idx.tz is not None:
+                idx_naive = idx.tz_convert("UTC").tz_localize(None)
+            else:
+                idx_naive = idx
+            dates = idx_naive.normalize()
+            # Use all calendar days (not just bdays) to catch weekends + holidays together
+            all_days = pd.date_range(dates.min(), dates.max(), freq="D")
+            missing = all_days.difference(dates)
+            if len(missing):
+                breaks.append(dict(values=missing.strftime("%Y-%m-%d").tolist()))
         except Exception:
             pass
     else:  # intraday — also hide overnight hours if the data suggests regular sessions
