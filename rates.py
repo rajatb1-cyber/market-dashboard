@@ -4,6 +4,7 @@ Data sources (all free, no API key required):
   US         — US Treasury XML  (treasury.gov)            daily
   Euro Area  — ECB yield curve  (data-api.ecb.europa.eu)  daily
   Japan      — Japan MOF JGBs   (mof.go.jp)               ~1-day lag
+  UK         — Bank of England  (bankofengland.co.uk)      ~1-day lag
   Australia  — RBA F2 benchmarks (rba.gov.au)             ~5-day lag
 """
 
@@ -23,10 +24,11 @@ COLORS = {
     "US":        "#2563EB",
     "Euro Area": "#DC2626",
     "Japan":     "#D97706",
+    "UK":        "#7C3AED",
     "Australia": "#059669",
 }
 
-DISPLAY_MATS = ["1Y", "2Y", "5Y", "10Y", "30Y"]
+DISPLAY_MATS = ["1Y", "2Y", "5Y", "10Y", "20Y", "30Y"]
 
 _HDR = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0"}
 
@@ -217,6 +219,49 @@ def fetch_australia_bonds() -> pd.DataFrame:
     return result
 
 
+# ── UK Bank of England ─────────────────────────────────────────────────────────
+
+@st.cache_data(ttl=3600)
+def fetch_uk_gilts(start: str | None = None) -> pd.DataFrame:
+    """UK Gilt nominal par yields from Bank of England — daily, ~1-day lag.
+    Returns 5Y, 10Y, 20Y maturities."""
+    if start is None:
+        start = (date.today() - timedelta(days=30)).isoformat()
+    try:
+        datefrom = date.fromisoformat(start).strftime("%d/%b/%Y")
+    except Exception:
+        datefrom = "01/Jan/2020"
+
+    url = (
+        "https://www.bankofengland.co.uk/boeapps/iadb/fromshowcolumns.asp"
+        f"?csv.x=yes&Datefrom={datefrom}&Dateto=now"
+        "&SeriesCodes=IUDSNPY,IUDMNPY,IUDLNPY&CSVF=TT&UsingCodes=Y"
+    )
+    try:
+        with urllib.request.urlopen(
+            urllib.request.Request(url, headers=_HDR), timeout=15
+        ) as r:
+            raw = r.read().decode("utf-8", errors="ignore")
+    except Exception:
+        return pd.DataFrame()
+
+    lines = raw.strip().split("\n")
+    hdr_i = next((i for i, l in enumerate(lines) if l.strip().startswith("DATE,")), None)
+    if hdr_i is None:
+        return pd.DataFrame()
+
+    df = pd.read_csv(io.StringIO("\n".join(lines[hdr_i:])))
+    df = df.rename(columns={df.columns[0]: "Date"})
+    df["Date"] = pd.to_datetime(df["Date"], format="%d %b %Y", errors="coerce")
+    df = df.dropna(subset=["Date"]).set_index("Date").sort_index()
+    df = df.rename(columns={"IUDSNPY": "5Y", "IUDMNPY": "10Y", "IUDLNPY": "20Y"})
+    keep = [c for c in ["5Y", "10Y", "20Y"] if c in df.columns]
+    result = df[keep].copy()
+    for c in keep:
+        result[c] = pd.to_numeric(result[c], errors="coerce")
+    return result
+
+
 # ── Snapshot helpers ───────────────────────────────────────────────────────────
 
 def _latest_two(df: pd.DataFrame, mat: str):
@@ -341,6 +386,7 @@ def render_rates():
             "US":        fetch_us_treasury(months_back=2),
             "Euro Area": fetch_ecb_curve(),
             "Japan":     fetch_japan_jgb(),
+            "UK":        fetch_uk_gilts(),
             "Australia": fetch_australia_bonds(),
         }
 
@@ -365,7 +411,7 @@ def render_rates():
             rows.append(row)
 
         df_snap = pd.DataFrame(rows).set_index("")
-        st.dataframe(df_snap, use_container_width=True, height=225)
+        st.dataframe(df_snap, use_container_width=True, height=260)
 
         # Last-updated info
         notes = []
@@ -401,13 +447,19 @@ def render_rates():
             "US":        fetch_us_treasury(months_back=months_map[period_sel]),
             "Euro Area": fetch_ecb_curve(start=start_date),
             "Japan":     fetch_japan_jgb(),
+            "UK":        fetch_uk_gilts(start=start_date),
             "Australia": fetch_australia_bonds(),
         }
 
     fig_hist = chart_historical(hist_dfs, mat_sel, selected, period_sel)
     st.plotly_chart(fig_hist, use_container_width=True)
 
-    if "Australia" in selected:
-        st.caption("Australia: RBA F2 benchmark bonds — ~5-day publication lag.")
+    notes_lag = []
+    if "UK" in selected:
+        notes_lag.append("UK: BoE gilt par yields (5Y/10Y/20Y), ~1-day lag.")
     if "Japan" in selected:
-        st.caption("Japan: MOF JGB data updated next business day.")
+        notes_lag.append("Japan: MOF JGBs, ~1-day lag.")
+    if "Australia" in selected:
+        notes_lag.append("Australia: RBA F2 benchmark bonds (2Y/3Y/5Y/10Y), ~5-day lag.")
+    if notes_lag:
+        st.caption("  ·  ".join(notes_lag))
