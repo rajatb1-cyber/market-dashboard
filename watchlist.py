@@ -244,19 +244,27 @@ def compute_row(inst: dict, df, columns: list) -> dict:
     d_chg = last - prev if prev else 0
     d_pct = (d_chg / prev * 100) if prev else 0
 
+    is_rate = inst.get("class") == "Rates"
+
     for c in columns:
         if c == "Price":
             row[c] = last
         elif c == "Change %":
-            row[c] = d_pct
+            row[c] = d_chg * 100 if is_rate else d_pct
         elif c == "Change":
-            row[c] = d_chg
+            row[c] = d_chg * 100 if is_rate else d_chg
         elif c == "Weekly %":
             ref = _f(close.iloc[-6]) if len(close) > 5 else _f(close.iloc[0])
-            row[c] = ((last - ref) / ref * 100) if ref else None
+            if is_rate:
+                row[c] = ((last - ref) * 100) if ref is not None else None
+            else:
+                row[c] = ((last - ref) / ref * 100) if ref else None
         elif c == "Monthly %":
             ref = _f(close.iloc[-22]) if len(close) > 21 else _f(close.iloc[0])
-            row[c] = ((last - ref) / ref * 100) if ref else None
+            if is_rate:
+                row[c] = ((last - ref) * 100) if ref is not None else None
+            else:
+                row[c] = ((last - ref) / ref * 100) if ref else None
         elif c == "RSI (14)":
             try:
                 rsi = ta_lib.momentum.RSIIndicator(close, window=14).rsi().dropna()
@@ -283,12 +291,16 @@ def compute_row(inst: dict, df, columns: list) -> dict:
 
 
 # ── Table formatting ───────────────────────────────────────────────────────────
-def _fmt(val, col: str) -> str:
+def _fmt(val, col: str, cls: str = "") -> str:
     if val is None or (isinstance(val, float) and np.isnan(val)):
         return "—"
     if col in ("Change %", "Weekly %", "Monthly %"):
+        if cls == "Rates":
+            return f"{int(round(val)):+d}bp"
         return f"{val:+.2f}%"
     if col == "Change":
+        if cls == "Rates":
+            return f"{int(round(val)):+d}bp"
         return f"{val:+.4f}" if -1 < val < 1 else f"{val:+.2f}"
     if col in ("RSI (14)", "RSI (30)"):
         return f"{val:.1f}"
@@ -309,7 +321,7 @@ def build_display_df(df_rows: pd.DataFrame, active_cols: list) -> pd.DataFrame:
     out["Class"] = df_rows["Class"]
     for c in active_cols:
         if c in df_rows.columns:
-            out[c] = df_rows[c].apply(lambda v: _fmt(v, c))
+            out[c] = [_fmt(v, c, cls) for v, cls in zip(df_rows[c], df_rows["Class"])]
     return out.reset_index(drop=True)
 
 
