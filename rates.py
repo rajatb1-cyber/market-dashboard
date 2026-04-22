@@ -351,8 +351,9 @@ def _fmt_cell(val, chg):
         return "—"
     chg_str = ""
     if chg is not None:
-        sign = "+" if chg >= 0 else ""
-        chg_str = f"  {sign}{chg:.2f}"
+        bps = int(round(chg * 100))
+        sign = "+" if bps >= 0 else ""
+        chg_str = f"  {sign}{bps}bp"
     return f"{val:.3f}{chg_str}"
 
 
