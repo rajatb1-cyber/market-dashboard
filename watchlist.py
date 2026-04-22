@@ -29,9 +29,9 @@ CHART_TIMEFRAMES = {
     "3M":  ("3mo", "1d"),
     "6M":  ("6mo", "1d"),
     "1Y":  ("1y",  "1d"),
-    "2Y":  ("2y",  "1wk"),
-    "5Y":  ("5y",  "1wk"),
-    "10Y": ("10y", "1wk"),
+    "2Y":  ("2y",  "1d"),
+    "5Y":  ("5y",  "1d"),
+    "10Y": ("10y", "1d"),
     "Custom": (None, "1d"),
 }
 
@@ -409,7 +409,7 @@ def fetch_chart_data(ticker: str, period: str | None, interval: str,
                 "1d": 2, "5d": 7, "1mo": 35, "3mo": 100, "6mo": 190,
                 "1y": 370, "2y": 740, "5y": 1830, "10y": 3660,
             }
-            _warmup = {"1d": 300, "1wk": 1500}  # extra calendar days per interval
+            _warmup = {"1d": 300}  # extra calendar days to warm up SMA(200)
             warmup = _warmup.get(interval, 0)
             if warmup and period in _period_days:
                 ext_start = (date.today() - timedelta(days=_period_days[period] + warmup)).isoformat()
