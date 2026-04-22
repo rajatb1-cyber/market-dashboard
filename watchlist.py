@@ -30,6 +30,8 @@ CHART_TIMEFRAMES = {
     "6M":  ("6mo", "1d"),
     "1Y":  ("1y",  "1d"),
     "2Y":  ("2y",  "1wk"),
+    "5Y":  ("5y",  "1wk"),
+    "10Y": ("10y", "1wk"),
     "Custom": (None, "1d"),
 }
 
@@ -118,7 +120,7 @@ def _fetch_fred_df(series_id: str, start: str = "2020-01-01") -> pd.DataFrame:
 
 def _fred_period_start(period: str | None) -> str:
     days = {"1d": 60, "5d": 60, "1mo": 90, "3mo": 100,
-            "6mo": 190, "1y": 370, "2y": 740, "5y": 1830}
+            "6mo": 190, "1y": 370, "2y": 740, "5y": 1830, "10y": 3650}
     return (date.today() - timedelta(days=days.get(period or "1y", 370))).isoformat()
 
 
