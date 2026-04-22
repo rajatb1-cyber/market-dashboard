@@ -401,9 +401,25 @@ def fetch_chart_data(ticker: str, period: str | None, interval: str,
             if isinstance(df.columns, pd.MultiIndex):
                 df.columns = df.columns.get_level_values(0)
             df.dropna(inplace=True)
+            trim_to = None
         else:
-            df = yf.download(ticker, period=period, interval=interval,
-                             auto_adjust=True, progress=False)
+            # Extra bars fetched before the requested window so SMA(200) is
+            # fully warmed up across the entire visible range.
+            _period_days = {
+                "1d": 2, "5d": 7, "1mo": 35, "3mo": 100, "6mo": 190,
+                "1y": 370, "2y": 740, "5y": 1830, "10y": 3660,
+            }
+            _warmup = {"1d": 300, "1wk": 1500}  # extra calendar days per interval
+            warmup = _warmup.get(interval, 0)
+            if warmup and period in _period_days:
+                ext_start = (date.today() - timedelta(days=_period_days[period] + warmup)).isoformat()
+                df = yf.download(ticker, start=ext_start, interval=interval,
+                                 auto_adjust=True, progress=False)
+                trim_to = date.today() - timedelta(days=_period_days[period])
+            else:
+                df = yf.download(ticker, period=period, interval=interval,
+                                 auto_adjust=True, progress=False)
+                trim_to = None
             if isinstance(df.columns, pd.MultiIndex):
                 df.columns = df.columns.get_level_values(0)
             df.dropna(inplace=True)
@@ -413,12 +429,19 @@ def fetch_chart_data(ticker: str, period: str | None, interval: str,
             df["SMA50"]  = ta_lib.trend.SMAIndicator(close, window=50).sma_indicator()
             df["SMA100"] = ta_lib.trend.SMAIndicator(close, window=100).sma_indicator()
             df["SMA200"] = ta_lib.trend.SMAIndicator(close, window=200).sma_indicator()
-            df["EMA20"] = ta_lib.trend.EMAIndicator(close, window=20).ema_indicator()
+            df["EMA20"]  = ta_lib.trend.EMAIndicator(close, window=20).ema_indicator()
             bb = ta_lib.volatility.BollingerBands(close, window=20, window_dev=2)
             df["BB_upper"] = bb.bollinger_hband()
             df["BB_lower"] = bb.bollinger_lband()
             df["RSI"]   = ta_lib.momentum.RSIIndicator(close, window=rsi_period).rsi()
             df["RSI30"] = ta_lib.momentum.RSIIndicator(close, window=30).rsi()
+            # Trim warm-up rows — indicators are fully computed, drop the extra history
+            if trim_to is not None:
+                idx = pd.DatetimeIndex(df.index)
+                trim_ts = pd.Timestamp(trim_to)
+                if idx.tz is not None:
+                    trim_ts = trim_ts.tz_localize(idx.tz)
+                df = df[idx >= trim_ts]
         return df
     except Exception:
         return pd.DataFrame()
