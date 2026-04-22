@@ -415,7 +415,8 @@ def fetch_chart_data(ticker: str, period: str | None, interval: str,
             bb = ta_lib.volatility.BollingerBands(close, window=20, window_dev=2)
             df["BB_upper"] = bb.bollinger_hband()
             df["BB_lower"] = bb.bollinger_lband()
-            df["RSI"] = ta_lib.momentum.RSIIndicator(close, window=rsi_period).rsi()
+            df["RSI"]   = ta_lib.momentum.RSIIndicator(close, window=rsi_period).rsi()
+            df["RSI30"] = ta_lib.momentum.RSIIndicator(close, window=30).rsi()
         return df
     except Exception:
         return pd.DataFrame()
@@ -466,10 +467,10 @@ def build_instrument_chart(df: pd.DataFrame, name: str, ticker: str,
         overlays = ["SMA 20", "SMA 50"]
 
     fig = make_subplots(
-        rows=2, cols=1,
+        rows=3, cols=1,
         shared_xaxes=True,
-        vertical_spacing=0.03,
-        row_heights=[0.72, 0.28],
+        vertical_spacing=0.02,
+        row_heights=[0.58, 0.21, 0.21],
     )
 
     close = df["Close"].squeeze()
@@ -529,24 +530,42 @@ def build_instrument_chart(df: pd.DataFrame, name: str, ticker: str,
             line=dict(color="rgba(100,116,139,0.6)", width=1),
             fill="tonexty", fillcolor="rgba(100,116,139,0.05)"), row=1, col=1)
 
-    # ── RSI ────────────────────────────────────────────────────────────────
-    rsi_row = 2
+    # ── RSI (14) ───────────────────────────────────────────────────────────
     if "RSI" in df:
         fig.add_hrect(y0=70, y1=100, fillcolor="rgba(220,38,38,0.05)",
-                      line_width=0, row=rsi_row, col=1)
+                      line_width=0, row=2, col=1)
         fig.add_hrect(y0=0,  y1=30,  fillcolor="rgba(5,150,105,0.05)",
-                      line_width=0, row=rsi_row, col=1)
+                      line_width=0, row=2, col=1)
         fig.add_hline(y=70, line_dash="dot", line_color="#DC2626",
-                      line_width=1.5, row=rsi_row, col=1)
+                      line_width=1.5, row=2, col=1)
         fig.add_hline(y=30, line_dash="dot", line_color="#059669",
-                      line_width=1.5, row=rsi_row, col=1)
+                      line_width=1.5, row=2, col=1)
         fig.add_trace(go.Scatter(
             x=df.index, y=df["RSI"],
             name=f"RSI({rsi_period})",
             line=dict(color="#0EA5E9", width=1.8),
             fill="tozeroy", fillcolor="rgba(14,165,233,0.06)",
-        ), row=rsi_row, col=1)
-        fig.update_yaxes(range=[0, 100], row=rsi_row, col=1,
+        ), row=2, col=1)
+        fig.update_yaxes(range=[0, 100], row=2, col=1,
+                         tickfont=dict(size=10), gridcolor="#E8EDF5")
+
+    # ── RSI (30) ───────────────────────────────────────────────────────────
+    if "RSI30" in df:
+        fig.add_hrect(y0=70, y1=100, fillcolor="rgba(220,38,38,0.05)",
+                      line_width=0, row=3, col=1)
+        fig.add_hrect(y0=0,  y1=30,  fillcolor="rgba(5,150,105,0.05)",
+                      line_width=0, row=3, col=1)
+        fig.add_hline(y=70, line_dash="dot", line_color="#DC2626",
+                      line_width=1.5, row=3, col=1)
+        fig.add_hline(y=30, line_dash="dot", line_color="#059669",
+                      line_width=1.5, row=3, col=1)
+        fig.add_trace(go.Scatter(
+            x=df.index, y=df["RSI30"],
+            name="RSI(30)",
+            line=dict(color="#A855F7", width=1.8),
+            fill="tozeroy", fillcolor="rgba(168,85,247,0.06)",
+        ), row=3, col=1)
+        fig.update_yaxes(range=[0, 100], row=3, col=1,
                          tickfont=dict(size=10), gridcolor="#E8EDF5")
 
     fig.update_layout(
@@ -555,7 +574,7 @@ def build_instrument_chart(df: pd.DataFrame, name: str, ticker: str,
             font=dict(size=16, color="#1A202C", family="Inter, Segoe UI, sans-serif"),
         ),
         xaxis_rangeslider_visible=False,
-        height=600,
+        height=750,
         paper_bgcolor="#FFFFFF", plot_bgcolor="#FAFBFD",
         font=dict(color="#1A202C", family="Inter, Segoe UI, sans-serif"),
         legend=dict(orientation="h", yanchor="bottom", y=1.02,
