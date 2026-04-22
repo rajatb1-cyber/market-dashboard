@@ -2,6 +2,7 @@
 Bloomberg-style watchlist — clickable rows, inline charts, persistent config.
 """
 
+import io
 import json
 import os
 import urllib.request
@@ -76,7 +77,13 @@ MUTE = "#94A3B8"
 
 # ── FRED helpers ───────────────────────────────────────────────────────────────
 FRED_MAP = {
-    "^GUKG10": "IRLTLT01GBM156N",   # UK 10-Year Government Bond Yield (monthly, OECD via FRED)
+    "^GUKG10": "IRLTLT01GBM156N",   # UK 10Y (monthly, OECD via FRED)
+    "^US2YT":  "DGS2",              # US 2Y constant maturity (daily, FRED)
+}
+
+ECB_MAP = {
+    "^ECB2Y":  "SR_2Y",    # ECB AAA euro area spot rate 2Y
+    "^ECB10Y": "SR_10Y",   # ECB AAA euro area spot rate 10Y
 }
 
 
@@ -115,6 +122,34 @@ def _fred_period_start(period: str | None) -> str:
     return (date.today() - timedelta(days=days.get(period or "1y", 370))).isoformat()
 
 
+@st.cache_data(ttl=3600)
+def _fetch_ecb_df(maturity_code: str, start: str = "2020-01-01") -> pd.DataFrame:
+    url = (
+        "https://data-api.ecb.europa.eu/service/data/"
+        f"YC/B.U2.EUR.4F.G_N_A.SV_C_YM.{maturity_code}"
+        f"?format=csvdata&startPeriod={start}"
+    )
+    try:
+        req = urllib.request.Request(
+            url, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+        )
+        with urllib.request.urlopen(req, timeout=10) as r:
+            tmp = pd.read_csv(io.StringIO(r.read().decode()))
+        tmp = tmp[["TIME_PERIOD", "OBS_VALUE"]].copy()
+        tmp.columns = ["Date", "Close"]
+        tmp["Date"] = pd.to_datetime(tmp["Date"])
+        tmp["Close"] = pd.to_numeric(tmp["Close"], errors="coerce")
+        tmp.set_index("Date", inplace=True)
+        tmp.dropna(inplace=True)
+        tmp["Open"]   = tmp["Close"]
+        tmp["High"]   = tmp["Close"]
+        tmp["Low"]    = tmp["Close"]
+        tmp["Volume"] = 0
+        return tmp
+    except Exception:
+        return pd.DataFrame()
+
+
 # ── Config persistence ─────────────────────────────────────────────────────────
 def load_config() -> dict:
     try:
@@ -145,14 +180,18 @@ def fetch_batch(tickers: tuple) -> dict:
 
     out = {}
 
-    # FRED tickers — fetched individually (not via yfinance)
+    # FRED / ECB tickers — fetched individually (not via yfinance)
     for tkr in tickers:
         if tkr in FRED_MAP:
             df = _fetch_fred_df(FRED_MAP[tkr], start=_fred_period_start("1y"))
             if not df.empty and len(df) > 5:
                 out[tkr] = df
+        elif tkr in ECB_MAP:
+            df = _fetch_ecb_df(ECB_MAP[tkr], start=_fred_period_start("1y"))
+            if not df.empty and len(df) > 5:
+                out[tkr] = df
 
-    yf_tickers = [t for t in tickers if t not in FRED_MAP]
+    yf_tickers = [t for t in tickers if t not in FRED_MAP and t not in ECB_MAP]
     if not yf_tickers:
         return out
 
@@ -329,10 +368,16 @@ def fetch_chart_data(ticker: str, period: str | None, interval: str,
                      rsi_period: int = 14,
                      start: str | None = None, end: str | None = None) -> pd.DataFrame:
     try:
-        # FRED-sourced tickers: always daily data regardless of requested interval
+        # FRED / ECB tickers: always daily data regardless of requested interval
         if ticker in FRED_MAP:
             fred_start = start if start else _fred_period_start(period)
             df = _fetch_fred_df(FRED_MAP[ticker], start=fred_start)
+            if not df.empty and end:
+                df = df[df.index <= pd.Timestamp(end)]
+            df.dropna(inplace=True)
+        elif ticker in ECB_MAP:
+            ecb_start = start if start else _fred_period_start(period)
+            df = _fetch_ecb_df(ECB_MAP[ticker], start=ecb_start)
             if not df.empty and end:
                 df = df[df.index <= pd.Timestamp(end)]
             df.dropna(inplace=True)
