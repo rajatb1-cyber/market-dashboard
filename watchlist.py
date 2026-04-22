@@ -478,7 +478,7 @@ def build_instrument_chart(df: pd.DataFrame, name: str, ticker: str,
     if chart_type == "Line":
         fig.add_trace(go.Scatter(
             x=df.index, y=close, name="Price",
-            line=dict(color="#0F172A", width=2),
+            line=dict(color="#0F172A", width=3),
         ), row=1, col=1)
 
     elif chart_type == "OHLC Bar":
@@ -705,7 +705,7 @@ def render_watchlist():
         with opt_c1:
             chart_type = st.selectbox(
                 "Chart type",
-                ["Candlestick", "OHLC Bar", "Line"],
+                ["Line", "Candlestick", "OHLC Bar"],
                 key=f"ct_{sel['ticker']}",
             )
 
