@@ -17,8 +17,8 @@ from datetime import datetime, timedelta, date
 # ── Config ─────────────────────────────────────────────────────────────────────
 CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "watchlist_config.json")
 
-ALL_COLUMNS     = ["Price", "Change %", "Change", "Weekly %", "Monthly %", "RSI", "RSI (30)", "52W High", "52W Low", "Volume"]
-DEFAULT_COLUMNS = ["Price", "Change %", "Weekly %", "Monthly %", "RSI", "RSI (30)", "52W High", "52W Low"]
+ALL_COLUMNS     = ["Price", "Change %", "Change", "Weekly %", "Monthly %", "RSI (14)", "RSI (30)", "52W High", "52W Low", "Volume"]
+DEFAULT_COLUMNS = ["Price", "Change %", "Weekly %", "Monthly %", "RSI (14)", "RSI (30)", "52W High", "52W Low"]
 ASSET_CLASSES   = ["Equity", "FX", "Rates", "Commodity", "Crypto", "Other"]
 
 CHART_TIMEFRAMES = {
@@ -218,7 +218,7 @@ def compute_row(inst: dict, df, columns: list) -> dict:
         elif c == "Monthly %":
             ref = _f(close.iloc[-22]) if len(close) > 21 else _f(close.iloc[0])
             row[c] = ((last - ref) / ref * 100) if ref else None
-        elif c == "RSI":
+        elif c == "RSI (14)":
             try:
                 rsi = ta_lib.momentum.RSIIndicator(close, window=14).rsi().dropna()
                 row[c] = _f(rsi.iloc[-1]) if not rsi.empty else None
@@ -251,7 +251,7 @@ def _fmt(val, col: str) -> str:
         return f"{val:+.2f}%"
     if col == "Change":
         return f"{val:+.4f}" if -1 < val < 1 else f"{val:+.2f}"
-    if col in ("RSI", "RSI (30)"):
+    if col in ("RSI (14)", "RSI (30)"):
         return f"{val:.1f}"
     if col == "Volume":
         if val >= 1e9: return f"{val/1e9:.1f}B"
@@ -277,7 +277,7 @@ def build_display_df(df_rows: pd.DataFrame, active_cols: list) -> pd.DataFrame:
 def style_table(df_display: pd.DataFrame, active_cols: list):
     """Apply green/red text to change columns via pandas Styler."""
     pct_cols = [c for c in active_cols if c in ("Change %", "Change", "Weekly %", "Monthly %")]
-    rsi_cols = [c for c in active_cols if c in ("RSI", "RSI (30)")]
+    rsi_cols = [c for c in active_cols if c in ("RSI (14)", "RSI (30)")]
 
     def color_change(val: str):
         if isinstance(val, str) and val.startswith("+"):
