@@ -1,10 +1,10 @@
 """
 Global Government Bond Rates tab.
 Data sources (all free, no API key required):
-  US         — US Treasury XML  (treasury.gov)      daily
+  US         — US Treasury XML  (treasury.gov)            daily
   Euro Area  — ECB yield curve  (data-api.ecb.europa.eu)  daily
-  Japan      — Japan MOF JGBs   (mof.go.jp)         daily
-  Australia  — RBA zero-coupon  (rba.gov.au)        daily, ~3-wk lag
+  Japan      — Japan MOF JGBs   (mof.go.jp)               ~1-day lag
+  Australia  — RBA F2 benchmarks (rba.gov.au)             ~5-day lag
 """
 
 import io
@@ -132,23 +132,11 @@ def fetch_ecb_curve(start: str | None = None) -> pd.DataFrame:
 
 # ── Japan MOF ─────────────────────────────────────────────────────────────────
 
-@st.cache_data(ttl=3600)
-def fetch_japan_jgb() -> pd.DataFrame:
-    """Full JGB history from MOF — used for both snapshot and historical chart."""
-    url = "https://www.mof.go.jp/english/jgbs/reference/interest_rate/historical/jgbcme_all.csv"
-    try:
-        with urllib.request.urlopen(
-            urllib.request.Request(url, headers=_HDR), timeout=20, context=_ssl()
-        ) as r:
-            raw = r.read().decode("utf-8", errors="ignore")
-    except Exception:
-        return pd.DataFrame()
-
+def _parse_mof_csv(raw: str) -> pd.DataFrame:
     lines = raw.strip().split("\n")
     hdr_i = next((i for i, l in enumerate(lines) if l.strip().startswith("Date,")), None)
     if hdr_i is None:
         return pd.DataFrame()
-
     df = pd.read_csv(io.StringIO("\n".join(lines[hdr_i:])))
     df.columns = [c.strip() for c in df.columns]
     df["Date"] = pd.to_datetime(df["Date"].str.strip(), format="%Y/%m/%d", errors="coerce")
@@ -156,15 +144,51 @@ def fetch_japan_jgb() -> pd.DataFrame:
     for c in df.columns:
         df[c] = pd.to_numeric(df[c], errors="coerce")
     keep = [c for c in ["1Y", "2Y", "3Y", "5Y", "7Y", "10Y", "20Y", "30Y"] if c in df.columns]
-    return df[keep]
+    return df[keep] if keep else pd.DataFrame()
+
+
+@st.cache_data(ttl=3600)
+def fetch_japan_jgb() -> pd.DataFrame:
+    """JGB yields from MOF — historical archive + current-month CSV merged for ~1-day lag."""
+    hist_url = "https://www.mof.go.jp/english/jgbs/reference/interest_rate/historical/jgbcme_all.csv"
+    curr_url = "https://www.mof.go.jp/english/jgbs/reference/interest_rate/jgbcme.csv"
+
+    hist_df = pd.DataFrame()
+    curr_df = pd.DataFrame()
+
+    try:
+        with urllib.request.urlopen(
+            urllib.request.Request(hist_url, headers=_HDR), timeout=20, context=_ssl()
+        ) as r:
+            hist_df = _parse_mof_csv(r.read().decode("utf-8", errors="ignore"))
+    except Exception:
+        pass
+
+    try:
+        with urllib.request.urlopen(
+            urllib.request.Request(curr_url, headers=_HDR), timeout=15, context=_ssl()
+        ) as r:
+            curr_df = _parse_mof_csv(r.read().decode("utf-8", errors="ignore"))
+    except Exception:
+        pass
+
+    if hist_df.empty and curr_df.empty:
+        return pd.DataFrame()
+    if hist_df.empty:
+        return curr_df
+    if curr_df.empty:
+        return hist_df
+
+    combined = pd.concat([hist_df, curr_df])
+    return combined[~combined.index.duplicated(keep="last")].sort_index()
 
 
 # ── RBA Australia ──────────────────────────────────────────────────────────────
 
 @st.cache_data(ttl=7200)
 def fetch_australia_bonds() -> pd.DataFrame:
-    """Zero-coupon yields from RBA — full history, ~3-week publication lag."""
-    url = "https://www.rba.gov.au/statistics/tables/csv/f17-yields.csv"
+    """Australian Government bond benchmark yields from RBA F2 table — daily, ~5-day lag."""
+    url = "https://www.rba.gov.au/statistics/tables/csv/f2-data.csv"
     try:
         with urllib.request.urlopen(
             urllib.request.Request(url, headers=_HDR), timeout=25, context=_ssl()
@@ -179,11 +203,17 @@ def fetch_australia_bonds() -> pd.DataFrame:
     df["Date"] = pd.to_datetime(df["Date"], format="%d-%b-%Y", errors="coerce")
     df = df.dropna(subset=["Date"]).set_index("Date").sort_index()
 
-    # Column positions verified: 1Y=5, 2Y=9, 5Y=21, 10Y=41
-    result = pd.DataFrame(index=df.index)
-    for mat, idx in [("1Y", 5), ("2Y", 9), ("5Y", 21), ("10Y", 41)]:
-        if idx < len(df.columns):
-            result[mat] = pd.to_numeric(df.iloc[:, idx], errors="coerce")
+    rename = {
+        "FCMYGBAG2D":  "2Y",
+        "FCMYGBAG3D":  "3Y",
+        "FCMYGBAG5D":  "5Y",
+        "FCMYGBAG10D": "10Y",
+    }
+    df = df.rename(columns=rename)
+    keep = [c for c in ["2Y", "3Y", "5Y", "10Y"] if c in df.columns]
+    result = df[keep].copy()
+    for c in keep:
+        result[c] = pd.to_numeric(result[c], errors="coerce")
     return result
 
 
@@ -378,4 +408,6 @@ def render_rates():
     st.plotly_chart(fig_hist, use_container_width=True)
 
     if "Australia" in selected:
-        st.caption("Australia RBA data has a ~3-week publication lag.")
+        st.caption("Australia: RBA F2 benchmark bonds — ~5-day publication lag.")
+    if "Japan" in selected:
+        st.caption("Japan: MOF JGB data updated next business day.")
