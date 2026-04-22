@@ -16,5 +16,5 @@
     {"name": "Bitcoin",      "ticker": "BTC-USD",  "class": "Crypto"},
     {"name": "Ethereum",     "ticker": "ETH-USD",  "class": "Crypto"}
   ],
-  "columns": ["Price", "Change %", "Weekly %", "Monthly %", "RSI", "52W High", "52W Low"]
+  "columns": ["Price", "Change %", "Weekly %", "Monthly %", "RSI", "RSI (30)", "52W High", "52W Low"]
 }
