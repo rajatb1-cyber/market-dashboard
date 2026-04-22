@@ -30,7 +30,7 @@ COLORS = {
 
 DISPLAY_MATS = ["1Y", "2Y", "5Y", "10Y", "20Y", "30Y"]
 
-_HDR = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0"}
+_HDR = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/124.0"}
 
 
 def _ssl():
