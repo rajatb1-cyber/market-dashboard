@@ -546,9 +546,6 @@ def build_instrument_chart(df: pd.DataFrame, name: str, ticker: str,
             line=dict(color="#0EA5E9", width=1.8),
             fill="tozeroy", fillcolor="rgba(14,165,233,0.06)",
         ), row=2, col=1)
-        fig.update_yaxes(range=[0, 100], row=2, col=1,
-                         tickfont=dict(size=10), gridcolor="#E8EDF5")
-
     # ── RSI (30) ───────────────────────────────────────────────────────────
     if "RSI30" in df:
         fig.add_hrect(y0=70, y1=100, fillcolor="rgba(220,38,38,0.05)",
@@ -565,9 +562,6 @@ def build_instrument_chart(df: pd.DataFrame, name: str, ticker: str,
             line=dict(color="#A855F7", width=1.8),
             fill="tozeroy", fillcolor="rgba(168,85,247,0.06)",
         ), row=3, col=1)
-        fig.update_yaxes(range=[0, 100], row=3, col=1,
-                         tickfont=dict(size=10), gridcolor="#E8EDF5")
-
     fig.update_layout(
         title=dict(
             text=f"<b>{name}</b>  <span style='font-size:13px;color:#64748B'>({ticker})  ·  {chart_type}  ·  RSI({rsi_period})</span>",
@@ -589,8 +583,15 @@ def build_instrument_chart(df: pd.DataFrame, name: str, ticker: str,
                      showspikes=True, spikecolor="#94A3B8", spikethickness=1,
                      rangebreaks=get_rangebreaks(df))
     fig.update_yaxes(gridcolor="#E8EDF5", zeroline=False, linecolor="#E2E8F0",
-                     showspikes=True, spikecolor="#94A3B8", spikethickness=1,
-                     rangemode="normal", autorange=True, row=1, col=1)
+                     showspikes=True, spikecolor="#94A3B8", spikethickness=1)
+    fig.update_yaxes(rangemode="normal", autorange=True, row=1, col=1)
+    # Pin RSI panel ranges last so nothing can override them
+    rsi_axis = dict(range=[0, 100], tickfont=dict(size=10),
+                    gridcolor="#E8EDF5", fixedrange=True)
+    if "RSI" in df:
+        fig.update_layout(yaxis2=rsi_axis)
+    if "RSI30" in df:
+        fig.update_layout(yaxis3=rsi_axis)
     return fig
 
 
