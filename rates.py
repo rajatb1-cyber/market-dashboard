@@ -11,7 +11,9 @@ Data sources (all free, no API key required):
 import io
 import re
 import ssl
+import struct
 import urllib.request
+import zlib
 from datetime import date, timedelta
 
 import pandas as pd
@@ -220,45 +222,114 @@ def fetch_australia_bonds() -> pd.DataFrame:
 
 
 # ── UK Bank of England ─────────────────────────────────────────────────────────
+# We use HTTP range requests to extract individual Excel files from the BoE's
+# 38 MB ZIP without downloading the whole thing (~1.2 MB per file needed).
+
+_BOE_ZIP = (
+    "https://www.bankofengland.co.uk/-/media/boe/files/statistics/yield-curves/"
+    "glcnominalddata.zip"
+)
+_BOE_FILES = {
+    "2025": "GLC Nominal daily data_2025 to present.xlsx",
+    "2016": "GLC Nominal daily data_2016 to 2024.xlsx",
+}
+
+
+def _boe_range(start: int, size: int) -> bytes:
+    req = urllib.request.Request(
+        _BOE_ZIP, headers={**_HDR, "Range": f"bytes={start}-{start+size-1}"}
+    )
+    with urllib.request.urlopen(req, timeout=30) as r:
+        return r.read()
+
+
+@st.cache_data(ttl=86400)
+def _boe_central_dir() -> dict:
+    """Parse the BoE ZIP central directory. Returns {filename: (lh_offset, comp_size)}."""
+    try:
+        req = urllib.request.Request(_BOE_ZIP, headers=_HDR, method="HEAD")
+        with urllib.request.urlopen(req, timeout=15) as r:
+            total = int(r.headers.get("Content-Length", 0))
+        if not total:
+            return {}
+        tail = _boe_range(max(0, total - 65536), min(65536, total))
+        pos = tail.rfind(b"PK\x05\x06")
+        if pos < 0:
+            return {}
+        eocd = tail[pos:]
+        cd_size   = struct.unpack_from("<I", eocd, 12)[0]
+        cd_offset = struct.unpack_from("<I", eocd, 16)[0]
+        cd = _boe_range(cd_offset, cd_size)
+        result, p = {}, 0
+        while p < len(cd):
+            if cd[p:p+4] != b"PK\x01\x02":
+                break
+            comp_sz  = struct.unpack_from("<I", cd, p+20)[0]
+            lh_off   = struct.unpack_from("<I", cd, p+42)[0]
+            fn_ln    = struct.unpack_from("<H", cd, p+28)[0]
+            ex_ln    = struct.unpack_from("<H", cd, p+30)[0]
+            cm_ln    = struct.unpack_from("<H", cd, p+32)[0]
+            fname    = cd[p+46:p+46+fn_ln].decode("utf-8", "ignore")
+            result[fname] = (lh_off, comp_sz)
+            p += 46 + fn_ln + ex_ln + cm_ln
+        return result
+    except Exception:
+        return {}
+
+
+@st.cache_data(ttl=86400)
+def _boe_spot_excel(file_key: str) -> pd.DataFrame:
+    """Fetch one Excel file from the BoE ZIP via range requests and parse spot curve."""
+    fname = _BOE_FILES.get(file_key, "")
+    cd = _boe_central_dir()
+    if not fname or fname not in cd:
+        return pd.DataFrame()
+    try:
+        lh_off, comp_sz = cd[fname]
+        lh = _boe_range(lh_off, 30)
+        fn_ln = struct.unpack_from("<H", lh, 26)[0]
+        ex_ln = struct.unpack_from("<H", lh, 28)[0]
+        data_start = lh_off + 30 + fn_ln + ex_ln
+        raw = zlib.decompress(_boe_range(data_start, comp_sz), -15)
+        xl = pd.ExcelFile(io.BytesIO(raw), engine="openpyxl")
+        if "4. spot curve" not in xl.sheet_names:
+            return pd.DataFrame()
+        df = xl.parse("4. spot curve", header=None)
+        year_cols = df.iloc[3, 1:].tolist()
+        data = df.iloc[5:].copy()
+        data.columns = ["Date"] + year_cols
+        data = data[data["Date"].notna()].copy()
+        data["Date"] = pd.to_datetime(data["Date"], errors="coerce")
+        data = data.dropna(subset=["Date"]).set_index("Date").sort_index()
+        for c in data.columns:
+            data[c] = pd.to_numeric(data[c], errors="coerce")
+        return data
+    except Exception:
+        return pd.DataFrame()
+
 
 @st.cache_data(ttl=3600)
 def fetch_uk_gilts(start: str | None = None) -> pd.DataFrame:
-    """UK Gilt nominal par yields from Bank of England — daily, ~1-day lag.
-    Returns 5Y, 10Y, 20Y maturities."""
+    """UK nominal spot yields from BoE yield curve — 1Y/2Y/5Y/10Y/20Y/30Y, ~3-week lag."""
     if start is None:
         start = (date.today() - timedelta(days=30)).isoformat()
-    try:
-        datefrom = date.fromisoformat(start).strftime("%d/%b/%Y")
-    except Exception:
-        datefrom = "01/Jan/2020"
 
-    url = (
-        "https://www.bankofengland.co.uk/boeapps/iadb/fromshowcolumns.asp"
-        f"?csv.x=yes&Datefrom={datefrom}&Dateto=now"
-        "&SeriesCodes=IUDSNPY,IUDMNPY,IUDLNPY&CSVF=TT&UsingCodes=Y"
-    )
-    try:
-        with urllib.request.urlopen(
-            urllib.request.Request(url, headers=_HDR), timeout=15
-        ) as r:
-            raw = r.read().decode("utf-8", errors="ignore")
-    except Exception:
+    start_dt = pd.Timestamp(start)
+    df25 = _boe_spot_excel("2025")
+    if start_dt.year < 2025:
+        df16 = _boe_spot_excel("2016")
+        base = pd.concat([df16, df25]).sort_index() if not df16.empty else df25
+    else:
+        base = df25
+
+    if base.empty:
         return pd.DataFrame()
 
-    lines = raw.strip().split("\n")
-    hdr_i = next((i for i, l in enumerate(lines) if l.strip().startswith("DATE,")), None)
-    if hdr_i is None:
-        return pd.DataFrame()
-
-    df = pd.read_csv(io.StringIO("\n".join(lines[hdr_i:])))
-    df = df.rename(columns={df.columns[0]: "Date"})
-    df["Date"] = pd.to_datetime(df["Date"], format="%d %b %Y", errors="coerce")
-    df = df.dropna(subset=["Date"]).set_index("Date").sort_index()
-    df = df.rename(columns={"IUDSNPY": "5Y", "IUDMNPY": "10Y", "IUDLNPY": "20Y"})
-    keep = [c for c in ["5Y", "10Y", "20Y"] if c in df.columns]
-    result = df[keep].copy()
-    for c in keep:
-        result[c] = pd.to_numeric(result[c], errors="coerce")
+    mat_map = {"1Y": 1.0, "2Y": 2.0, "5Y": 5.0, "10Y": 10.0, "20Y": 20.0, "30Y": 30.0}
+    result = pd.DataFrame(index=base.index)
+    for mat, yr in mat_map.items():
+        if yr in base.columns:
+            result[mat] = base[yr]
     return result
 
 
@@ -456,7 +527,7 @@ def render_rates():
 
     notes_lag = []
     if "UK" in selected:
-        notes_lag.append("UK: BoE gilt par yields (5Y/10Y/20Y), ~1-day lag.")
+        notes_lag.append("UK: BoE nominal spot curve (1Y–30Y), ~3-week lag.")
     if "Japan" in selected:
         notes_lag.append("Japan: MOF JGBs, ~1-day lag.")
     if "Australia" in selected:
