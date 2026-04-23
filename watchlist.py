@@ -454,7 +454,9 @@ def fetch_chart_data(ticker: str, period: str | None, interval: str,
                 df["RSI"]   = ta_lib.momentum.RSIIndicator(close, window=rsi_period).rsi()
                 df["RSI30"] = ta_lib.momentum.RSIIndicator(close, window=30).rsi()
             else:
-                # Intraday chart: forward-fill today's daily RSI onto every bar
+                # Intraday chart: place daily RSI only at the last bar of each
+                # trading day (NaN elsewhere). Plotly connects the dots with a
+                # line, giving clean daily-resolution RSI on an intraday chart.
                 _d = _raw_daily(ticker)
                 if not _d.empty:
                     _dc = _d["Close"].squeeze().astype(float)
@@ -470,8 +472,14 @@ def fetch_chart_data(ticker: str, period: str | None, interval: str,
                         _cdates = _cidx.tz_convert("UTC").tz_localize(None).normalize()
                     else:
                         _cdates = _cidx.normalize()
-                    df["RSI"]   = [_map14.get(d) for d in _cdates]
-                    df["RSI30"] = [_map30.get(d) for d in _cdates]
+                    rsi14_col = [np.nan] * len(df)
+                    rsi30_col = [np.nan] * len(df)
+                    for i, d in enumerate(_cdates):
+                        if i == len(_cdates) - 1 or _cdates[i + 1] != d:
+                            rsi14_col[i] = _map14.get(d, np.nan)
+                            rsi30_col[i] = _map30.get(d, np.nan)
+                    df["RSI"]   = rsi14_col
+                    df["RSI30"] = rsi30_col
                 else:
                     df["RSI"]   = ta_lib.momentum.RSIIndicator(close, window=rsi_period).rsi()
                     df["RSI30"] = ta_lib.momentum.RSIIndicator(close, window=30).rsi()
@@ -609,6 +617,7 @@ def build_instrument_chart(df: pd.DataFrame, name: str, ticker: str,
             x=df.index, y=df["RSI"],
             name=f"RSI({rsi_period})",
             line=dict(color="#0EA5E9", width=1.8),
+            connectgaps=True,
             fill="tozeroy", fillcolor="rgba(14,165,233,0.06)",
         ), row=2, col=1)
     # ── RSI (30) ───────────────────────────────────────────────────────────
@@ -625,6 +634,7 @@ def build_instrument_chart(df: pd.DataFrame, name: str, ticker: str,
             x=df.index, y=df["RSI30"],
             name="RSI(30)",
             line=dict(color="#A855F7", width=1.8),
+            connectgaps=True,
             fill="tozeroy", fillcolor="rgba(168,85,247,0.06)",
         ), row=3, col=1)
     fig.update_layout(
