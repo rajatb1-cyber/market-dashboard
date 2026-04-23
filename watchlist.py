@@ -200,13 +200,15 @@ def fetch_batch(tickers: tuple) -> dict:
     try:
         raw = yf.download(
             yf_tickers, period="1y", interval="1d",
-            auto_adjust=True, progress=False, group_by="ticker",
+            auto_adjust=True, progress=False,
         )
         for tkr in yf_tickers:
             try:
-                df = raw[tkr].copy() if len(yf_tickers) > 1 else raw.copy()
-                if isinstance(df.columns, pd.MultiIndex):
-                    df.columns = df.columns.get_level_values(0)
+                if isinstance(raw.columns, pd.MultiIndex):
+                    # Modern yfinance: columns are (Price, Ticker) — use xs to slice
+                    df = raw.xs(tkr, level=1, axis=1).copy()
+                else:
+                    df = raw.copy()
                 df.dropna(how="all", inplace=True)
                 if len(df) > 5:
                     out[tkr] = df
