@@ -211,7 +211,10 @@ def fetch_batch(tickers: tuple) -> dict:
                     df = raw.copy()
                 df.dropna(how="all", inplace=True)
                 try:
-                    df.index = pd.DatetimeIndex(df.index).normalize()
+                    idx = pd.DatetimeIndex(df.index)
+                    if idx.tz is not None:
+                        idx = idx.tz_convert("UTC").tz_localize(None)
+                    df.index = idx.normalize()
                     df = df[~df.index.duplicated(keep="last")]
                 except Exception:
                     pass
@@ -430,11 +433,15 @@ def fetch_chart_data(ticker: str, period: str | None, interval: str,
             if isinstance(df.columns, pd.MultiIndex):
                 df.columns = df.columns.get_level_values(0)
             df.dropna(inplace=True)
-        # Deduplicate: yfinance can return two rows for the same date with
-        # different timezone offsets — normalize to midnight and keep last.
+        # Deduplicate: yfinance can return two rows for the same calendar date
+        # with different tz offsets (e.g. +00:00 vs -03:00). Convert to UTC,
+        # strip tz, then deduplicate so every date appears exactly once.
         if not df.empty and interval in ("1d", "1wk", "1mo"):
             try:
-                df.index = pd.DatetimeIndex(df.index).normalize()
+                idx = pd.DatetimeIndex(df.index)
+                if idx.tz is not None:
+                    idx = idx.tz_convert("UTC").tz_localize(None)
+                df.index = idx.normalize()
                 df = df[~df.index.duplicated(keep="last")]
             except Exception:
                 pass
