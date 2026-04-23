@@ -210,6 +210,11 @@ def fetch_batch(tickers: tuple) -> dict:
                 else:
                     df = raw.copy()
                 df.dropna(how="all", inplace=True)
+                try:
+                    df.index = pd.DatetimeIndex(df.index).normalize()
+                    df = df[~df.index.duplicated(keep="last")]
+                except Exception:
+                    pass
                 if len(df) > 5:
                     out[tkr] = df
             except Exception:
@@ -425,6 +430,14 @@ def fetch_chart_data(ticker: str, period: str | None, interval: str,
             if isinstance(df.columns, pd.MultiIndex):
                 df.columns = df.columns.get_level_values(0)
             df.dropna(inplace=True)
+        # Deduplicate: yfinance can return two rows for the same date with
+        # different timezone offsets — normalize to midnight and keep last.
+        if not df.empty and interval in ("1d", "1wk", "1mo"):
+            try:
+                df.index = pd.DatetimeIndex(df.index).normalize()
+                df = df[~df.index.duplicated(keep="last")]
+            except Exception:
+                pass
         if not df.empty:
             close = df["Close"].squeeze().astype(float)
             df["SMA20"]  = ta_lib.trend.SMAIndicator(close, window=20).sma_indicator()
