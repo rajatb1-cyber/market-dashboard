@@ -194,36 +194,22 @@ def fetch_batch(tickers: tuple) -> dict:
                 out[tkr] = df
 
     yf_tickers = [t for t in tickers if t not in FRED_MAP and t not in ECB_MAP]
-    if not yf_tickers:
-        return out
-
-    try:
-        raw = yf.download(
-            yf_tickers, period="1y", interval="1d",
-            auto_adjust=True, progress=False,
-        )
-        for tkr in yf_tickers:
-            try:
-                if isinstance(raw.columns, pd.MultiIndex):
-                    # Modern yfinance: columns are (Price, Ticker) — use xs to slice
-                    df = raw.xs(tkr, level=1, axis=1).copy()
-                else:
-                    df = raw.copy()
-                df.dropna(how="all", inplace=True)
-                try:
-                    idx = pd.DatetimeIndex(df.index)
-                    if idx.tz is not None:
-                        idx = idx.tz_convert("UTC").tz_localize(None)
-                    df.index = idx.normalize()
-                    df = df[~df.index.duplicated(keep="last")]
-                except Exception:
-                    pass
-                if len(df) > 5:
-                    out[tkr] = df
-            except Exception:
-                pass
-    except Exception:
-        pass
+    for tkr in yf_tickers:
+        try:
+            df = yf.download(tkr, period="1y", interval="1d",
+                             auto_adjust=True, progress=False)
+            if isinstance(df.columns, pd.MultiIndex):
+                df.columns = df.columns.get_level_values(0)
+            df.dropna(how="all", inplace=True)
+            idx = pd.DatetimeIndex(df.index)
+            if idx.tz is not None:
+                idx = idx.tz_convert("UTC").tz_localize(None)
+            df.index = idx.normalize()
+            df = df[~df.index.duplicated(keep="last")]
+            if len(df) > 5:
+                out[tkr] = df
+        except Exception:
+            pass
 
     return out
 
