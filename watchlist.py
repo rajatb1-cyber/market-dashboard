@@ -152,6 +152,32 @@ def _fetch_ecb_df(maturity_code: str, start: str = "2020-01-01") -> pd.DataFrame
         return pd.DataFrame()
 
 
+# ── Single source of truth for daily OHLCV ────────────────────────────────────
+_DAILY_LOOKBACK = 670   # 300-day SMA warm-up + 370-day 1Y window
+
+def _raw_daily(ticker: str) -> pd.DataFrame:
+    """670 days of clean daily OHLCV for one ticker. Used by both table and chart
+    so RSI always comes from identical price data in both places."""
+    start = (date.today() - timedelta(days=_DAILY_LOOKBACK)).isoformat()
+    if ticker in FRED_MAP:
+        return _fetch_fred_df(FRED_MAP[ticker], start=start)
+    if ticker in ECB_MAP:
+        return _fetch_ecb_df(ECB_MAP[ticker], start=start)
+    try:
+        df = yf.download(ticker, start=start, interval="1d",
+                         auto_adjust=True, progress=False)
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.get_level_values(0)
+        df = df[df["Close"].notna()]
+        idx = pd.DatetimeIndex(df.index)
+        if idx.tz is not None:
+            idx = idx.tz_convert("UTC").tz_localize(None)
+        df.index = idx.normalize()
+        return df[~df.index.duplicated(keep="last")]
+    except Exception:
+        return pd.DataFrame()
+
+
 # ── Config persistence ─────────────────────────────────────────────────────────
 def load_config() -> dict:
     try:
@@ -175,42 +201,16 @@ def save_config(cfg: dict):
 
 
 # ── Watchlist data ─────────────────────────────────────────────────────────────
-@st.cache_data(ttl=120)
+@st.cache_data(ttl=300)
 def fetch_batch(tickers: tuple) -> dict:
+    """Thin wrapper — each ticker is fetched via _raw_daily (shared cache)."""
     if not tickers:
         return {}
-
     out = {}
-
-    # FRED / ECB tickers — fetched individually (not via yfinance)
     for tkr in tickers:
-        if tkr in FRED_MAP:
-            df = _fetch_fred_df(FRED_MAP[tkr], start=_fred_period_start("1y"))
-            if not df.empty and len(df) > 5:
-                out[tkr] = df
-        elif tkr in ECB_MAP:
-            df = _fetch_ecb_df(ECB_MAP[tkr], start=_fred_period_start("1y"))
-            if not df.empty and len(df) > 5:
-                out[tkr] = df
-
-    yf_tickers = [t for t in tickers if t not in FRED_MAP and t not in ECB_MAP]
-    for tkr in yf_tickers:
-        try:
-            df = yf.download(tkr, period="1y", interval="1d",
-                             auto_adjust=True, progress=False)
-            if isinstance(df.columns, pd.MultiIndex):
-                df.columns = df.columns.get_level_values(0)
-            df.dropna(how="all", inplace=True)
-            idx = pd.DatetimeIndex(df.index)
-            if idx.tz is not None:
-                idx = idx.tz_convert("UTC").tz_localize(None)
-            df.index = idx.normalize()
-            df = df[~df.index.duplicated(keep="last")]
-            if len(df) > 5:
-                out[tkr] = df
-        except Exception:
-            pass
-
+        df = _raw_daily(tkr)
+        if not df.empty and len(df) > 5:
+            out[tkr] = df
     return out
 
 
@@ -399,26 +399,33 @@ def fetch_chart_data(ticker: str, period: str | None, interval: str,
             df.dropna(inplace=True)
             trim_to = None
         else:
-            # Extra bars fetched before the requested window so SMA(200) is
-            # fully warmed up across the entire visible range.
             _period_days = {
                 "1d": 2, "5d": 7, "1mo": 35, "3mo": 100, "6mo": 190,
                 "1y": 370, "2y": 740, "5y": 1830, "10y": 3660,
             }
-            _warmup = {"1d": 300}  # extra calendar days to warm up SMA(200)
-            warmup = _warmup.get(interval, 0)
-            if warmup and period in _period_days:
-                ext_start = (date.today() - timedelta(days=_period_days[period] + warmup)).isoformat()
-                df = yf.download(ticker, start=ext_start, interval=interval,
-                                 auto_adjust=True, progress=False)
+            # For daily ≤1Y views reuse the same cached daily data that the
+            # watchlist table uses — this guarantees RSI/indicators are computed
+            # from identical rows so table and chart values always match.
+            if interval == "1d" and period in ("3mo", "6mo", "1y"):
+                df = _raw_daily(ticker).copy()
                 trim_to = date.today() - timedelta(days=_period_days[period])
             else:
-                df = yf.download(ticker, period=period, interval=interval,
-                                 auto_adjust=True, progress=False)
-                trim_to = None
-            if isinstance(df.columns, pd.MultiIndex):
-                df.columns = df.columns.get_level_values(0)
-            df.dropna(inplace=True)
+                # 2Y/5Y/10Y and intraday: fetch an extended window so SMA(200)
+                # is fully warmed up across the entire visible range.
+                _warmup = {"1d": 300}
+                warmup = _warmup.get(interval, 0)
+                if warmup and period in _period_days:
+                    ext_start = (date.today() - timedelta(days=_period_days[period] + warmup)).isoformat()
+                    df = yf.download(ticker, start=ext_start, interval=interval,
+                                     auto_adjust=True, progress=False)
+                    trim_to = date.today() - timedelta(days=_period_days[period])
+                else:
+                    df = yf.download(ticker, period=period, interval=interval,
+                                     auto_adjust=True, progress=False)
+                    trim_to = None
+                if isinstance(df.columns, pd.MultiIndex):
+                    df.columns = df.columns.get_level_values(0)
+                df.dropna(inplace=True)
         # Deduplicate: yfinance can return two rows for the same calendar date
         # with different tz offsets (e.g. +00:00 vs -03:00). Convert to UTC,
         # strip tz, then deduplicate so every date appears exactly once.
@@ -441,8 +448,33 @@ def fetch_chart_data(ticker: str, period: str | None, interval: str,
             bb = ta_lib.volatility.BollingerBands(close, window=20, window_dev=2)
             df["BB_upper"] = bb.bollinger_hband()
             df["BB_lower"] = bb.bollinger_lband()
-            df["RSI"]   = ta_lib.momentum.RSIIndicator(close, window=rsi_period).rsi()
-            df["RSI30"] = ta_lib.momentum.RSIIndicator(close, window=30).rsi()
+            # RSI always on daily bars regardless of chart interval so it
+            # matches the watchlist table value.
+            if interval in ("1d", "1wk", "1mo"):
+                df["RSI"]   = ta_lib.momentum.RSIIndicator(close, window=rsi_period).rsi()
+                df["RSI30"] = ta_lib.momentum.RSIIndicator(close, window=30).rsi()
+            else:
+                # Intraday chart: forward-fill today's daily RSI onto every bar
+                _d = _raw_daily(ticker)
+                if not _d.empty:
+                    _dc = _d["Close"].squeeze().astype(float)
+                    _r14 = ta_lib.momentum.RSIIndicator(_dc, window=rsi_period).rsi()
+                    _r30 = ta_lib.momentum.RSIIndicator(_dc, window=30).rsi()
+                    _didx = pd.DatetimeIndex(_r14.index)
+                    if _didx.tz is not None:
+                        _didx = _didx.tz_convert("UTC").tz_localize(None)
+                    _map14 = dict(zip(_didx.normalize(), _r14.values))
+                    _map30 = dict(zip(_didx.normalize(), _r30.values))
+                    _cidx = pd.DatetimeIndex(df.index)
+                    if _cidx.tz is not None:
+                        _cdates = _cidx.tz_convert("UTC").tz_localize(None).normalize()
+                    else:
+                        _cdates = _cidx.normalize()
+                    df["RSI"]   = [_map14.get(d) for d in _cdates]
+                    df["RSI30"] = [_map30.get(d) for d in _cdates]
+                else:
+                    df["RSI"]   = ta_lib.momentum.RSIIndicator(close, window=rsi_period).rsi()
+                    df["RSI30"] = ta_lib.momentum.RSIIndicator(close, window=30).rsi()
             # Trim warm-up rows — indicators are fully computed, drop the extra history
             if trim_to is not None:
                 idx = pd.DatetimeIndex(df.index)
@@ -752,7 +784,7 @@ def render_watchlist():
             tf = st.segmented_control(
                 "Timeframe",
                 options=list(CHART_TIMEFRAMES.keys()),
-                default="1M",
+                default="3M",
                 key=f"tf_{sel['ticker']}",
             )
         with tf_cols[1]:
