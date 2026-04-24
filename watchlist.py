@@ -468,7 +468,13 @@ def fetch_chart_data(ticker: str, period: str | None, interval: str,
                 # is fully warmed up across the entire visible range.
                 _warmup = {"1d": 300}
                 warmup = _warmup.get(interval, 0)
-                if warmup and period in _period_days:
+                if interval == "1d" and ticker in ALPHAVANTAGE_FX_MAP:
+                    # Alpha Vantage tickers: use full history, trim after indicators
+                    from_sym, to_sym = ALPHAVANTAGE_FX_MAP[ticker]
+                    ext_start = (date.today() - timedelta(days=_period_days.get(period, 370) + warmup)).isoformat()
+                    df = _fetch_alphavantage_fx(from_sym, to_sym, start=ext_start)
+                    trim_to = date.today() - timedelta(days=_period_days.get(period, 370))
+                elif warmup and period in _period_days:
                     ext_start = (date.today() - timedelta(days=_period_days[period] + warmup)).isoformat()
                     df = yf.download(ticker, start=ext_start, interval=interval,
                                      auto_adjust=True, progress=False)
