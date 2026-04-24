@@ -195,10 +195,71 @@ def _detail_charts(asset1: str, asset2: str,
         font=dict(family="Inter, Segoe UI, sans-serif", color="#1A202C"),
     )
     st.plotly_chart(fig_roll, use_container_width=True)
+
+    # ── Regression scatter ────────────────────────────────────────────────────
+    xy = combined.dropna()
+    if len(xy) >= 3:
+        x_vals = xy["a"].values
+        y_vals = xy["b"].values
+
+        slope, intercept = np.polyfit(x_vals, y_vals, 1)
+        y_hat   = slope * x_vals + intercept
+        ss_res  = float(np.sum((y_vals - y_hat) ** 2))
+        ss_tot  = float(np.sum((y_vals - y_vals.mean()) ** 2))
+        r2      = 1 - ss_res / ss_tot if ss_tot > 0 else float("nan")
+
+        x_line = np.array([x_vals.min(), x_vals.max()])
+        y_line = slope * x_line + intercept
+
+        x_label = f"{asset1} ({'Δ' if cls1 == 'Rates' else '%Δ'} daily)" if detail_mode == "Returns" else asset1
+        y_label = f"{asset2} ({'Δ' if cls2 == 'Rates' else '%Δ'} daily)" if detail_mode == "Returns" else asset2
+
+        fig_reg = go.Figure()
+        fig_reg.add_trace(go.Scatter(
+            x=x_vals, y=y_vals,
+            mode="markers",
+            marker=dict(color="#0EA5E9", size=5, opacity=0.55,
+                        line=dict(width=0.5, color="#075985")),
+            name="Observations",
+            hovertemplate=f"{x_label}: %{{x:.4f}}<br>{y_label}: %{{y:.4f}}<extra></extra>",
+        ))
+        fig_reg.add_trace(go.Scatter(
+            x=x_line, y=y_line,
+            mode="lines",
+            line=dict(color="#F59E0B", width=2, dash="dash"),
+            name="OLS fit",
+        ))
+
+        slope_str = f"{slope:+.4f}"
+        intercept_str = f"{intercept:+.4f}"
+        fig_reg.update_layout(
+            title=dict(
+                text=(f"Regression: {asset2} ~ {asset1}  "
+                      f"<span style='font-size:12px;color:#64748B'>"
+                      f"slope={slope_str}  intercept={intercept_str}  "
+                      f"R²={r2:.3f}</span>"),
+                font=dict(size=14, color="#1A202C"),
+            ),
+            height=340,
+            margin=dict(l=10, r=10, t=55, b=10),
+            paper_bgcolor="#FFFFFF", plot_bgcolor="#F8FAFC",
+            xaxis=dict(title=x_label, gridcolor="#E8EDF5", zeroline=True,
+                       zerolinecolor="#CBD5E1", zerolinewidth=1),
+            yaxis=dict(title=y_label, gridcolor="#E8EDF5", zeroline=True,
+                       zerolinecolor="#CBD5E1", zerolinewidth=1),
+            legend=dict(orientation="h", y=1.06, x=0,
+                        font=dict(size=11),
+                        bgcolor="rgba(255,255,255,0.85)",
+                        bordercolor="#E2E8F0", borderwidth=1),
+            font=dict(family="Inter, Segoe UI, sans-serif", color="#1A202C"),
+        )
+        st.plotly_chart(fig_reg, use_container_width=True)
+
     corr_basis = "outright levels" if detail_mode == "Levels" else "daily returns"
     st.caption(
         f"Price chart: outright levels on independent axes  ·  "
-        f"Rolling correlation: {roll_window}-day window on {corr_basis}"
+        f"Rolling correlation: {roll_window}-day window on {corr_basis}  ·  "
+        f"Regression: OLS on {corr_basis}"
     )
 
 
