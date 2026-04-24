@@ -214,14 +214,44 @@ def _detail_charts(asset1: str, asset2: str,
         x_label = f"{asset1} ({'Δ' if cls1 == 'Rates' else '%Δ'} daily)" if detail_mode == "Returns" else asset1
         y_label = f"{asset2} ({'Δ' if cls2 == 'Rates' else '%Δ'} daily)" if detail_mode == "Returns" else asset2
 
+        dates      = xy.index
+        date_strs  = [d.strftime("%Y-%m-%d") for d in dates]
+        color_norm = np.linspace(0, 1, len(xy))
+
         fig_reg = go.Figure()
+        # All points except last — gradient light→dark blue by date
         fig_reg.add_trace(go.Scatter(
-            x=x_vals, y=y_vals,
+            x=x_vals[:-1], y=y_vals[:-1],
             mode="markers",
-            marker=dict(color="#0EA5E9", size=5, opacity=0.55,
-                        line=dict(width=0.5, color="#075985")),
+            marker=dict(
+                color=color_norm[:-1],
+                colorscale=[[0, "#BFDBFE"], [1, "#1E40AF"]],
+                size=5,
+                opacity=0.75,
+                showscale=True,
+                colorbar=dict(
+                    tickvals=[0, 1],
+                    ticktext=[date_strs[0], date_strs[-1]],
+                    thickness=12, len=0.55, y=0.5,
+                    tickfont=dict(size=10),
+                ),
+            ),
             name="Observations",
-            hovertemplate=f"{x_label}: %{{x:.4f}}<br>{y_label}: %{{y:.4f}}<extra></extra>",
+            customdata=date_strs[:-1],
+            hovertemplate=(f"<b>%{{customdata}}</b><br>"
+                           f"{x_label}: %{{x:.4f}}<br>"
+                           f"{y_label}: %{{y:.4f}}<extra></extra>"),
+        ))
+        # Latest observation — highlighted red
+        fig_reg.add_trace(go.Scatter(
+            x=[x_vals[-1]], y=[y_vals[-1]],
+            mode="markers",
+            marker=dict(color="#EF4444", size=10, symbol="circle",
+                        line=dict(width=2, color="#7F1D1D")),
+            name=f"Latest ({date_strs[-1]})",
+            hovertemplate=(f"<b>Latest · {date_strs[-1]}</b><br>"
+                           f"{x_label}: %{{x:.4f}}<br>"
+                           f"{y_label}: %{{y:.4f}}<extra></extra>"),
         ))
         fig_reg.add_trace(go.Scatter(
             x=x_line, y=y_line,
