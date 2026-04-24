@@ -6,7 +6,7 @@ from plotly.subplots import make_subplots
 from datetime import date, timedelta
 import yfinance as yf
 
-from watchlist import (fetch_batch, load_config,
+from watchlist import (fetch_batch, load_config, save_config,
                        FRED_MAP, ECB_MAP, ALPHAVANTAGE_FX_MAP,
                        _fetch_fred_df, _fetch_ecb_df, _fetch_alphavantage_fx)
 
@@ -201,20 +201,35 @@ def render_correl():
 
     st.markdown("### Correlation Matrix")
 
+    # ── Seed session state from saved config on first load ────────────────────
+    if "corr_rows" not in st.session_state:
+        saved = cfg.get("correl_rows", all_names[:min(5, len(all_names))])
+        st.session_state["corr_rows"] = [n for n in saved if n in all_names]
+    if "corr_cols" not in st.session_state:
+        saved = cfg.get("correl_cols", all_names[:min(5, len(all_names))])
+        st.session_state["corr_cols"] = [n for n in saved if n in all_names]
+
     # ── Asset selectors ───────────────────────────────────────────────────────
-    c1, c2 = st.columns(2)
+    c1, c2, c3 = st.columns([4, 4, 1])
     with c1:
         row_names = st.multiselect(
             "Row assets (up to 10)", all_names,
-            default=all_names[:min(5, len(all_names))],
             key="corr_rows",
         )
     with c2:
         col_names = st.multiselect(
             "Column assets (up to 10)", all_names,
-            default=all_names[:min(5, len(all_names))],
             key="corr_cols",
         )
+    with c3:
+        st.markdown("<div style='margin-top:26px'>", unsafe_allow_html=True)
+        if st.button("💾 Save Grid", use_container_width=True):
+            cfg["correl_rows"] = st.session_state.get("corr_rows", [])
+            cfg["correl_cols"] = st.session_state.get("corr_cols", [])
+            save_config(cfg)
+            st.session_state.wl_config = cfg
+            st.toast("Grid saved!", icon="✅")
+        st.markdown("</div>", unsafe_allow_html=True)
 
     # ── Timeframe ─────────────────────────────────────────────────────────────
     tf_opts = ["1W", "2W", "1M", "3M", "6M", "1Y", "Custom"]
