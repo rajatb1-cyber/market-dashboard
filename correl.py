@@ -46,6 +46,14 @@ def render_correl():
         end_date   = date.today()
         start_date = end_date - timedelta(days=days_map[tf])
 
+    # ── Returns vs Levels toggle ──────────────────────────────────────────────
+    corr_mode = st.radio(
+        "Correlate on",
+        ["Daily returns", "Outright levels"],
+        horizontal=True,
+        key="corr_mode",
+    )
+
     if not row_names or not col_names:
         st.info("Select at least one asset for both rows and columns.")
         return
@@ -70,9 +78,12 @@ def render_correl():
         ]
         if len(close) < 5:
             continue
-        inst_class = name_to_inst[name].get("class", "")
-        chg = close.diff() if inst_class == "Rates" else close.pct_change()
-        returns[name] = chg.dropna()
+        if corr_mode == "Outright levels":
+            returns[name] = close
+        else:
+            inst_class = name_to_inst[name].get("class", "")
+            chg = close.diff() if inst_class == "Rates" else close.pct_change()
+            returns[name] = chg.dropna()
 
     if len(returns) < 2:
         st.warning("Not enough data — try a longer timeframe or different assets.")
@@ -132,8 +143,12 @@ def render_correl():
     )
 
     st.plotly_chart(fig, use_container_width=True)
+    mode_label = (
+        "Outright price levels"
+        if corr_mode == "Outright levels"
+        else "Daily returns (Rates: absolute Δ, others: % change)"
+    )
     st.caption(
         f"Period: **{start_date}** → **{end_date}**  ·  "
-        f"**{n_days}** trading days  ·  "
-        f"Daily returns (Rates: absolute Δ, all others: % change)"
+        f"**{n_days}** trading days  ·  {mode_label}"
     )
