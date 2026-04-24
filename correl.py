@@ -143,18 +143,18 @@ def _detail_charts(asset1: str, asset2: str,
     rolling_corr = (combined["a"].rolling(window=roll_window)
                     .corr(combined["b"]) * 100)
 
-    last_corr = rolling_corr.dropna().iloc[-1] if not rolling_corr.dropna().empty else np.nan
+    clean = rolling_corr.dropna()
+    last_corr = float(clean.iloc[-1]) if not clean.empty else np.nan
+    pad   = max(3.0, (float(clean.max()) - float(clean.min())) * 0.05) if not clean.empty else 5.0
+    y_lo  = float(clean.min()) - pad if not clean.empty else -100
+    y_hi  = float(clean.max()) + pad if not clean.empty else 100
 
     line_color = "#059669" if last_corr >= 0 else "#DC2626"
 
     fig_roll = go.Figure()
-    fig_roll.add_hrect(y0=0, y1=100,
-                       fillcolor="rgba(5,150,105,0.04)", line_width=0)
-    fig_roll.add_hrect(y0=-100, y1=0,
-                       fillcolor="rgba(220,38,38,0.04)", line_width=0)
-    fig_roll.add_hline(y=0,   line_color="#94A3B8", line_width=1)
-    fig_roll.add_hline(y=50,  line_color="#E2E8F0", line_width=1, line_dash="dot")
-    fig_roll.add_hline(y=-50, line_color="#E2E8F0", line_width=1, line_dash="dot")
+    fig_roll.add_hrect(y0=0,   y1=y_hi, fillcolor="rgba(5,150,105,0.04)",  line_width=0)
+    fig_roll.add_hrect(y0=y_lo, y1=0,   fillcolor="rgba(220,38,38,0.04)", line_width=0)
+    fig_roll.add_hline(y=0, line_color="#94A3B8", line_width=1)
 
     fig_roll.add_trace(go.Scatter(
         x=rolling_corr.index,
@@ -176,9 +176,8 @@ def _detail_charts(asset1: str, asset2: str,
         height=280,
         margin=dict(l=10, r=10, t=45, b=10),
         paper_bgcolor="#FFFFFF", plot_bgcolor="#F8FAFC",
-        yaxis=dict(gridcolor="#E8EDF5", zeroline=False,
-                   tickformat=".0f",
-                   ticksuffix="%"),
+        yaxis=dict(range=[y_lo, y_hi], gridcolor="#E8EDF5",
+                   zeroline=False, tickformat=".0f", ticksuffix="%"),
         xaxis=dict(gridcolor="#E8EDF5", zeroline=False),
         showlegend=False,
         hovermode="x unified",
