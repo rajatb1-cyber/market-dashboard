@@ -11,6 +11,7 @@ import urllib.request
 import finnhub
 from watchlist import render_watchlist
 from rates import render_rates
+from correl import render_correl
 
 # ── Page config ────────────────────────────────────────────────────────────────
 st.set_page_config(
@@ -662,13 +663,16 @@ def render_sidebar():
 def main():
     ticker, timeframe, overlays, show_volume, show_rsi, show_macd, auto_refresh = render_sidebar()
 
-    tab_charts, tab_macro, tab_rates = st.tabs(["📊  Charts & Indicators", "📋  Macro", "📈  Rates"])
+    tab_charts, tab_macro, tab_rates, tab_correl = st.tabs(["📊  Charts & Indicators", "📋  Macro", "📈  Rates", "🔗  Correl"])
 
     with tab_macro:
         render_watchlist()
 
     with tab_rates:
         render_rates()
+
+    with tab_correl:
+        render_correl()
 
     with tab_charts:
         # ── Market overview ──────────────────────────────────────────────────
