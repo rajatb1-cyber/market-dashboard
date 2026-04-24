@@ -50,11 +50,7 @@ def _detail_charts(asset1: str, asset2: str,
                    name_to_inst: dict, name_to_ticker: dict):
     """Render the dual-axis price chart and rolling correlation chart."""
     st.markdown("---")
-    hdr, close_btn = st.columns([8, 1])
-    hdr.markdown(f"#### {asset1}  ×  {asset2}")
-    if close_btn.button("✕", key="corr_close"):
-        st.session_state.pop("corr_selected", None)
-        st.rerun()
+    st.markdown(f"**{asset1}  ×  {asset2}**")
 
     # ── Controls ──────────────────────────────────────────────────────────────
     c1, c2 = st.columns([4, 2])
@@ -333,20 +329,7 @@ def render_correl():
         font=dict(family="Inter, Segoe UI, sans-serif", color="#1A202C"),
     )
 
-    # Click to select a cell
-    st.caption("👆 Click a cell to see the detail charts below")
-    event = st.plotly_chart(
-        fig, use_container_width=True,
-        on_select="rerun", selection_mode=["points"],
-        key="corr_heatmap",
-    )
-
-    if event and event.selection and event.selection.points:
-        pt = event.selection.points[0]
-        sel_col = pt.get("x")
-        sel_row = pt.get("y")
-        if sel_row and sel_col:
-            st.session_state["corr_selected"] = (sel_row, sel_col)
+    st.plotly_chart(fig, use_container_width=True, key="corr_heatmap")
 
     mode_label = (
         "Outright price levels"
@@ -359,8 +342,14 @@ def render_correl():
     )
 
     # ── Detail charts ─────────────────────────────────────────────────────────
-    sel = st.session_state.get("corr_selected")
-    if sel:
-        asset1, asset2 = sel
-        if asset1 in name_to_ticker and asset2 in name_to_ticker:
-            _detail_charts(asset1, asset2, name_to_inst, name_to_ticker)
+    st.markdown("#### Detail charts")
+    d1, d2 = st.columns(2)
+    with d1:
+        detail_a1 = st.selectbox("Asset 1", ["— select —"] + row_avail,
+                                 key="corr_d1")
+    with d2:
+        detail_a2 = st.selectbox("Asset 2", ["— select —"] + col_avail,
+                                 key="corr_d2")
+
+    if detail_a1 != "— select —" and detail_a2 != "— select —":
+        _detail_charts(detail_a1, detail_a2, name_to_inst, name_to_ticker)
