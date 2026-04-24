@@ -159,7 +159,7 @@ def _fetch_ecb_df(maturity_code: str, start: str = "2020-01-01") -> pd.DataFrame
 @st.cache_data(ttl=3600)
 def _fetch_alphavantage_fx(from_sym: str, to_sym: str, start: str = "2020-01-01") -> pd.DataFrame:
     try:
-        key = st.secrets["ALPHAVANTAGE_KEY"]
+        key = st.secrets.get("ALPHAVANTAGE_KEY", "SRJZBTK9RHQ2KDJE")
         url = (
             f"https://www.alphavantage.co/query?function=FX_DAILY"
             f"&from_symbol={from_sym}&to_symbol={to_sym}"
