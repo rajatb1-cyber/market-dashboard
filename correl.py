@@ -53,7 +53,7 @@ def _detail_charts(asset1: str, asset2: str,
     st.markdown(f"**{asset1}  ×  {asset2}**")
 
     # ── Controls ──────────────────────────────────────────────────────────────
-    c1, c2 = st.columns([4, 2])
+    c1, c2, c3 = st.columns([4, 2, 2])
     with c1:
         tf = st.segmented_control(
             "Chart history",
@@ -65,6 +65,13 @@ def _detail_charts(asset1: str, asset2: str,
         roll_window = st.number_input(
             "Rolling window (days)", min_value=5, max_value=252,
             value=30, step=5, key="corr_roll",
+        )
+    with c3:
+        detail_mode = st.radio(
+            "Correlate on",
+            ["Returns", "Levels"],
+            horizontal=True,
+            key="corr_detail_mode",
         )
 
     if tf == "Custom":
@@ -136,8 +143,12 @@ def _detail_charts(asset1: str, asset2: str,
     st.plotly_chart(fig_price, use_container_width=True)
 
     # ── Rolling correlation ────────────────────────────────────────────────────
-    r1 = s1.diff() if cls1 == "Rates" else s1.pct_change()
-    r2 = s2.diff() if cls2 == "Rates" else s2.pct_change()
+    if detail_mode == "Levels":
+        r1 = s1
+        r2 = s2
+    else:
+        r1 = s1.diff() if cls1 == "Rates" else s1.pct_change()
+        r2 = s2.diff() if cls2 == "Rates" else s2.pct_change()
 
     combined     = pd.concat([r1.rename("a"), r2.rename("b")], axis=1).dropna()
     rolling_corr = (combined["a"].rolling(window=roll_window)
@@ -184,9 +195,10 @@ def _detail_charts(asset1: str, asset2: str,
         font=dict(family="Inter, Segoe UI, sans-serif", color="#1A202C"),
     )
     st.plotly_chart(fig_roll, use_container_width=True)
+    corr_basis = "outright levels" if detail_mode == "Levels" else "daily returns"
     st.caption(
         f"Price chart: outright levels on independent axes  ·  "
-        f"Rolling correlation: {roll_window}-day window on daily returns"
+        f"Rolling correlation: {roll_window}-day window on {corr_basis}"
     )
 
 
