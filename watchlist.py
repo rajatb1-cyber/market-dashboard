@@ -88,6 +88,10 @@ ECB_MAP = {
     "^ECB10Y": "SR_10Y",   # ECB AAA euro area spot rate 10Y
 }
 
+ALPHAVANTAGE_FX_MAP = {
+    "USDCNH=X": ("USD", "CNH"),   # offshore yuan — no Yahoo Finance history
+}
+
 
 @st.cache_data(ttl=3600)
 def _fetch_fred_df(series_id: str, start: str = "2020-01-01") -> pd.DataFrame:
@@ -152,6 +156,39 @@ def _fetch_ecb_df(maturity_code: str, start: str = "2020-01-01") -> pd.DataFrame
         return pd.DataFrame()
 
 
+@st.cache_data(ttl=3600)
+def _fetch_alphavantage_fx(from_sym: str, to_sym: str, start: str = "2020-01-01") -> pd.DataFrame:
+    try:
+        key = st.secrets["ALPHAVANTAGE_KEY"]
+        url = (
+            f"https://www.alphavantage.co/query?function=FX_DAILY"
+            f"&from_symbol={from_sym}&to_symbol={to_sym}"
+            f"&outputsize=full&apikey={key}"
+        )
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=15) as r:
+            data = json.loads(r.read())
+        ts = data.get("Time Series FX (Daily)", {})
+        if not ts:
+            return pd.DataFrame()
+        rows = []
+        for d, v in ts.items():
+            rows.append({
+                "Date":   pd.Timestamp(d),
+                "Open":   float(v["1. open"]),
+                "High":   float(v["2. high"]),
+                "Low":    float(v["3. low"]),
+                "Close":  float(v["4. close"]),
+                "Volume": 0,
+            })
+        df = pd.DataFrame(rows).set_index("Date").sort_index()
+        df = df[df.index >= pd.Timestamp(start)]
+        df.dropna(inplace=True)
+        return df
+    except Exception:
+        return pd.DataFrame()
+
+
 # ── Single source of truth for daily OHLCV ────────────────────────────────────
 _DAILY_LOOKBACK = 670   # 300-day SMA warm-up + 370-day 1Y window
 
@@ -163,6 +200,9 @@ def _raw_daily(ticker: str) -> pd.DataFrame:
         return _fetch_fred_df(FRED_MAP[ticker], start=start)
     if ticker in ECB_MAP:
         return _fetch_ecb_df(ECB_MAP[ticker], start=start)
+    if ticker in ALPHAVANTAGE_FX_MAP:
+        from_sym, to_sym = ALPHAVANTAGE_FX_MAP[ticker]
+        return _fetch_alphavantage_fx(from_sym, to_sym, start=start)
     try:
         df = yf.download(ticker, start=start, interval="1d",
                          auto_adjust=True, progress=False)
