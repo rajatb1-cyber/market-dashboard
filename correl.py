@@ -126,11 +126,11 @@ def _detail_charts(asset1: str, asset2: str,
     fig_price.update_xaxes(gridcolor="#E8EDF5", zeroline=False)
     fig_price.update_yaxes(title_text=asset1, gridcolor="#E8EDF5",
                            zeroline=False, secondary_y=False,
-                           titlefont=dict(color="#0EA5E9"),
+                           title_font=dict(color="#0EA5E9"),
                            tickfont=dict(color="#0EA5E9"))
     fig_price.update_yaxes(title_text=asset2, gridcolor="#E8EDF5",
                            zeroline=False, secondary_y=True,
-                           titlefont=dict(color="#F59E0B"),
+                           title_font=dict(color="#F59E0B"),
                            tickfont=dict(color="#F59E0B"))
 
     st.plotly_chart(fig_price, use_container_width=True)
