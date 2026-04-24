@@ -176,6 +176,13 @@ def _raw_daily(ticker: str) -> pd.DataFrame:
             if isinstance(df.columns, pd.MultiIndex):
                 df.columns = df.columns.get_level_values(0)
             df = df[df["Close"].notna()]
+        if df.empty:
+            # Last resort: Ticker.history() uses a different API path
+            df = yf.Ticker(ticker).history(period="1y", interval="1d",
+                                           auto_adjust=True)
+            if isinstance(df.columns, pd.MultiIndex):
+                df.columns = df.columns.get_level_values(0)
+            df = df[df["Close"].notna()]
         idx = pd.DatetimeIndex(df.index)
         if idx.tz is not None:
             idx = idx.tz_convert("UTC").tz_localize(None)
