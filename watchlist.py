@@ -169,6 +169,13 @@ def _raw_daily(ticker: str) -> pd.DataFrame:
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = df.columns.get_level_values(0)
         df = df[df["Close"].notna()]
+        if df.empty:
+            # Some tickers don't support start= — fall back to period
+            df = yf.download(ticker, period="1y", interval="1d",
+                             auto_adjust=True, progress=False)
+            if isinstance(df.columns, pd.MultiIndex):
+                df.columns = df.columns.get_level_values(0)
+            df = df[df["Close"].notna()]
         idx = pd.DatetimeIndex(df.index)
         if idx.tz is not None:
             idx = idx.tz_convert("UTC").tz_localize(None)
