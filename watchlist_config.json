@@ -9,6 +9,7 @@
     {"name": "Russell 2000", "ticker": "^RUT",     "class": "Equity"},
     {"name": "Nikkei 225",   "ticker": "^N225",    "class": "Equity"},
     {"name": "NIFTY 50",     "ticker": "^NSEI",    "class": "Equity"},
+    {"name": "BBDXY",        "ticker": "BBDXY_SYNTH", "class": "FX"},
     {"name": "EUR/USD",      "ticker": "EURUSD=X", "class": "FX"},
     {"name": "GBP/USD",      "ticker": "GBPUSD=X", "class": "FX"},
     {"name": "USD/JPY",      "ticker": "JPY=X",    "class": "FX"},

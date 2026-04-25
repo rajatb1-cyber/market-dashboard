@@ -8,7 +8,8 @@ import yfinance as yf
 
 from watchlist import (fetch_batch, load_config, save_config,
                        FRED_MAP, ECB_MAP, ALPHAVANTAGE_FX_MAP,
-                       _fetch_fred_df, _fetch_ecb_df, _fetch_alphavantage_fx)
+                       _fetch_fred_df, _fetch_ecb_df, _fetch_alphavantage_fx,
+                       _compute_bbdxy)
 
 _DETAIL_DAYS = {
     "1M": 30, "3M": 91, "6M": 182,
@@ -19,7 +20,9 @@ _DETAIL_DAYS = {
 @st.cache_data(ttl=300)
 def _fetch_detail_series(ticker: str, start_str: str) -> pd.Series:
     """Daily close for one ticker going back to start_str (handles all sources)."""
-    if ticker in FRED_MAP:
+    if ticker == "BBDXY_SYNTH":
+        df = _compute_bbdxy(start=start_str)
+    elif ticker in FRED_MAP:
         df = _fetch_fred_df(FRED_MAP[ticker], start=start_str)
     elif ticker in ECB_MAP:
         df = _fetch_ecb_df(ECB_MAP[ticker], start=start_str)

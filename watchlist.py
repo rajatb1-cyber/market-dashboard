@@ -92,6 +92,23 @@ ALPHAVANTAGE_FX_MAP = {
     "USDCNH=X": ("USD", "CNH"),   # offshore yuan — no Yahoo Finance history
 }
 
+# Synthetic BBDXY: geometric weighted basket of 12 USD pairs.
+# invert=True means Yahoo ticker is CCY/USD (e.g. EUR/USD) so we flip to USD/CCY.
+BBDXY_WEIGHTS = {
+    "EURUSD=X": (0.2947, True),
+    "JPY=X":    (0.1238, False),
+    "CAD=X":    (0.1165, False),
+    "GBPUSD=X": (0.1027, True),
+    "MXN=X":    (0.0962, False),
+    "USDCNH=X": (0.0700, False),
+    "CHF=X":    (0.0447, False),
+    "AUDUSD=X": (0.0439, True),
+    "KRW=X":    (0.0316, False),
+    "INR=X":    (0.0283, False),
+    "SGD=X":    (0.0261, False),
+    "TWD=X":    (0.0215, False),
+}
+
 
 @st.cache_data(ttl=3600)
 def _fetch_fred_df(series_id: str, start: str = "2020-01-01") -> pd.DataFrame:
@@ -189,6 +206,60 @@ def _fetch_alphavantage_fx(from_sym: str, to_sym: str, start: str = "2020-01-01"
         return pd.DataFrame()
 
 
+def _compute_bbdxy(start: str) -> pd.DataFrame:
+    """Synthetic BBDXY: geometric weighted mean of 12 USD pairs, base 1200."""
+    frames: dict = {}
+    weights_used: dict = {}
+    for tkr, (w, invert) in BBDXY_WEIGHTS.items():
+        try:
+            if tkr in ALPHAVANTAGE_FX_MAP:
+                from_sym, to_sym = ALPHAVANTAGE_FX_MAP[tkr]
+                df = _fetch_alphavantage_fx(from_sym, to_sym, start=start)
+            else:
+                df = yf.download(tkr, start=start, interval="1d",
+                                 auto_adjust=True, progress=False)
+                if isinstance(df.columns, pd.MultiIndex):
+                    df.columns = df.columns.get_level_values(0)
+                df = df[df["Close"].notna()]
+            if df.empty:
+                continue
+            s = df["Close"].astype(float).squeeze()
+            if invert:
+                s = 1.0 / s
+            idx = pd.DatetimeIndex(s.index)
+            if idx.tz is not None:
+                idx = idx.tz_convert("UTC").tz_localize(None)
+            s.index = idx.normalize()
+            s = s[~s.index.duplicated(keep="last")]
+            frames[tkr] = s
+            weights_used[tkr] = w
+        except Exception:
+            continue
+
+    if len(frames) < 6:
+        return pd.DataFrame()
+
+    combined = pd.DataFrame(frames).dropna(how="any")
+    if combined.empty or len(combined) < 5:
+        return pd.DataFrame()
+
+    total_w = sum(weights_used[t] for t in combined.columns)
+    log_index = sum(
+        (weights_used[tkr] / total_w) * np.log(combined[tkr])
+        for tkr in combined.columns
+    )
+    product = np.exp(log_index)
+    index_vals = product / float(product.iloc[0]) * 1200.0
+
+    return pd.DataFrame({
+        "Open":   index_vals,
+        "High":   index_vals,
+        "Low":    index_vals,
+        "Close":  index_vals,
+        "Volume": pd.Series(0, index=index_vals.index),
+    })
+
+
 # ── Single source of truth for daily OHLCV ────────────────────────────────────
 _DAILY_LOOKBACK = 670   # 300-day SMA warm-up + 370-day 1Y window
 
@@ -196,6 +267,8 @@ def _raw_daily(ticker: str) -> pd.DataFrame:
     """670 days of clean daily OHLCV for one ticker. Used by both table and chart
     so RSI always comes from identical price data in both places."""
     start = (date.today() - timedelta(days=_DAILY_LOOKBACK)).isoformat()
+    if ticker == "BBDXY_SYNTH":
+        return _compute_bbdxy(start=start)
     if ticker in FRED_MAP:
         return _fetch_fred_df(FRED_MAP[ticker], start=start)
     if ticker in ECB_MAP:
@@ -477,8 +550,21 @@ def fetch_chart_data(ticker: str, period: str | None, interval: str,
                      rsi_period: int = 14,
                      start: str | None = None, end: str | None = None) -> pd.DataFrame:
     try:
-        # FRED / ECB tickers: always daily data regardless of requested interval
-        if ticker in FRED_MAP:
+        trim_to = None
+        _period_days_map = {
+            "1d": 2, "5d": 7, "1mo": 35, "3mo": 100, "6mo": 190,
+            "1y": 370, "2y": 740, "5y": 1830, "10y": 3660,
+        }
+        # FRED / ECB / BBDXY_SYNTH: always daily data regardless of requested interval
+        if ticker == "BBDXY_SYNTH":
+            lookback = _period_days_map.get(period, 370) + 300
+            bbdxy_start = start if start else (date.today() - timedelta(days=lookback)).isoformat()
+            df = _compute_bbdxy(start=bbdxy_start)
+            if not df.empty:
+                trim_to = date.today() - timedelta(days=_period_days_map.get(period, 370)) if period else None
+                if end:
+                    df = df[df.index <= pd.Timestamp(end)]
+        elif ticker in FRED_MAP:
             fred_start = start if start else _fred_period_start(period)
             df = _fetch_fred_df(FRED_MAP[ticker], start=fred_start)
             if not df.empty and end:
