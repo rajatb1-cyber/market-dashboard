@@ -3,6 +3,7 @@ import pandas as pd
 import plotly.graph_objects as go
 import json
 import urllib.request
+from urllib.parse import urlparse
 from datetime import datetime
 
 from watchlist import load_config, save_config
@@ -11,14 +12,46 @@ _GAMMA = "https://gamma-api.polymarket.com"
 _CLOB  = "https://clob.polymarket.com"
 
 
+# ── API helpers ────────────────────────────────────────────────────────────────
+
 @st.cache_data(ttl=60)
-def _fetch_market(slug: str) -> dict:
+def _fetch_event_markets(event_slug: str) -> list:
+    """Return all markets for a Polymarket event slug."""
     try:
-        url = f"{_GAMMA}/markets?slug={slug}"
+        url = f"{_GAMMA}/events?slug={event_slug}"
         req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
         with urllib.request.urlopen(req, timeout=10) as r:
             data = json.loads(r.read())
-        return data[0] if isinstance(data, list) and data else {}
+        if isinstance(data, list) and data:
+            return data[0].get("markets", [])
+    except Exception:
+        pass
+    return []
+
+
+@st.cache_data(ttl=60)
+def _fetch_market_by_slug(market_slug: str) -> dict:
+    """Return a single market by its market slug."""
+    try:
+        url = f"{_GAMMA}/markets?slug={market_slug}"
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=10) as r:
+            data = json.loads(r.read())
+        if isinstance(data, list) and data:
+            return data[0]
+    except Exception:
+        pass
+    return {}
+
+
+@st.cache_data(ttl=60)
+def _fetch_market_by_condition(condition_id: str) -> dict:
+    """Return a market by condition_id (for when we already have stored market data)."""
+    try:
+        url = f"{_GAMMA}/markets/{condition_id}"
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=10) as r:
+            return json.loads(r.read())
     except Exception:
         return {}
 
@@ -43,12 +76,28 @@ def _fetch_history(token_id: str, days: int = 30) -> pd.DataFrame:
         return pd.DataFrame()
 
 
-def _slug_from_url(raw: str) -> str:
-    raw = raw.strip().rstrip("/")
-    if "polymarket.com" in raw:
-        return raw.split("/")[-1]
-    return raw
+# ── URL parsing ────────────────────────────────────────────────────────────────
 
+def _parse_polymarket_url(raw: str) -> tuple:
+    """Return (event_slug, market_slug_or_None) from a URL or bare slug."""
+    raw = raw.strip()
+    if "#" in raw:
+        raw = raw.split("#")[0]
+    raw = raw.rstrip("/")
+
+    if "polymarket.com" in raw:
+        path  = urlparse(raw).path          # e.g. /event/event-slug/market-slug
+        parts = [p for p in path.split("/") if p]
+        if len(parts) >= 3:
+            return parts[1], parts[2]       # (event_slug, market_slug)
+        elif len(parts) >= 2:
+            return parts[1], None           # event URL only
+        return raw.split("/")[-1], None
+
+    return raw, None                        # bare slug treated as event slug
+
+
+# ── Market parsing ────────────────────────────────────────────────────────────
 
 def _parse_market(data: dict) -> dict:
     try:
@@ -85,8 +134,11 @@ def _parse_market(data: dict) -> dict:
         "end_date":  end_date,
         "active":    data.get("active", True),
         "closed":    data.get("closed", False),
+        "slug":      data.get("slug", ""),
     }
 
+
+# ── Render ─────────────────────────────────────────────────────────────────────
 
 def render_prediction():
     cfg     = st.session_state.get("wl_config") or load_config()
@@ -100,39 +152,82 @@ def render_prediction():
         c1, c2 = st.columns([5, 1])
         with c1:
             new_url = st.text_input(
-                "URL", placeholder="https://polymarket.com/event/.../market-slug",
+                "URL", placeholder="https://polymarket.com/event/event-slug",
                 key="pm_add_url", label_visibility="collapsed",
             )
         with c2:
-            add_btn = st.button("Add", type="primary", use_container_width=True, key="pm_add_btn")
+            search_btn = st.button("Search", type="primary",
+                                   use_container_width=True, key="pm_search_btn")
 
-        if add_btn and new_url.strip():
-            slug = _slug_from_url(new_url)
-            if any(m["slug"] == slug for m in markets):
-                st.warning("Already tracking this market.")
+        if search_btn and new_url.strip():
+            event_slug, market_slug = _parse_polymarket_url(new_url)
+            found_markets = []
+
+            with st.spinner("Fetching market…"):
+                if market_slug:
+                    raw = _fetch_market_by_slug(market_slug)
+                    if raw:
+                        found_markets = [raw]
+                if not found_markets:
+                    found_markets = _fetch_event_markets(event_slug)
+
+            if found_markets:
+                st.session_state["pm_found"] = found_markets
             else:
-                with st.spinner("Fetching market…"):
-                    raw = _fetch_market(slug)
-                if raw:
-                    name = raw.get("question", slug)
-                    markets.append({"slug": slug, "name": name})
-                    cfg["prediction_markets"] = markets
-                    save_config(cfg)
-                    st.session_state.wl_config = cfg
-                    st.success(f"Added: {name}")
+                st.error(f"Could not find any markets for `{event_slug}`. Check the URL.")
+                st.session_state.pop("pm_found", None)
+
+        # ── Market picker (shown after a successful search) ─────────────────
+        if "pm_found" in st.session_state:
+            found = st.session_state["pm_found"]
+            existing_slugs = {m["slug"] for m in markets}
+
+            if len(found) == 1:
+                m = found[0]
+                st.success(f"Found: **{m.get('question', m.get('slug'))}**")
+                if st.button("Add this market", key="pm_add_single"):
+                    slug = m.get("slug", "")
+                    if slug and slug not in existing_slugs:
+                        markets.append({"slug": slug, "name": m.get("question", slug)})
+                        cfg["prediction_markets"] = markets
+                        save_config(cfg)
+                        st.session_state.wl_config = cfg
+                    st.session_state.pop("pm_found", None)
                     st.rerun()
+            else:
+                questions = [m.get("question", m.get("slug", "")) for m in found]
+                new_qs    = [q for q, m in zip(questions, found)
+                             if m.get("slug", "") not in existing_slugs]
+                if not new_qs:
+                    st.info("All markets in this event are already tracked.")
+                    st.session_state.pop("pm_found", None)
                 else:
-                    st.error("Could not find market. Check the URL or slug.")
+                    selected = st.multiselect(
+                        f"This event has {len(found)} markets — select which to add:",
+                        new_qs, default=new_qs, key="pm_multi_sel",
+                    )
+                    if st.button("Add selected", type="primary", key="pm_add_multi"):
+                        sel_set = set(selected)
+                        for m, q in zip(found, questions):
+                            if q in sel_set:
+                                slug = m.get("slug", "")
+                                if slug and slug not in existing_slugs:
+                                    markets.append({"slug": slug, "name": q})
+                        cfg["prediction_markets"] = markets
+                        save_config(cfg)
+                        st.session_state.wl_config = cfg
+                        st.session_state.pop("pm_found", None)
+                        st.rerun()
 
     if not markets:
         st.info("No markets tracked yet — paste a Polymarket URL above to add one.")
         return
 
-    # ── Fetch all markets ───────────────────────────────────────────────────
+    # ── Fetch all tracked markets ───────────────────────────────────────────
     parsed = {}
     with st.spinner("Loading probabilities…"):
         for m in markets:
-            raw = _fetch_market(m["slug"])
+            raw = _fetch_market_by_slug(m["slug"])
             if raw:
                 parsed[m["slug"]] = _parse_market(raw)
 
@@ -259,7 +354,6 @@ def render_prediction():
             fill_color = (
                 "rgba(5,150,105,0.08)" if last_prob >= 50 else "rgba(220,38,38,0.08)"
             )
-
             fig = go.Figure()
             fig.add_trace(go.Scatter(
                 x=[hist.index[0], hist.index[-1]], y=[50, 50],
