@@ -246,12 +246,57 @@ def load_config() -> dict:
     return {"instruments": DEFAULT_INSTRUMENTS.copy(), "columns": DEFAULT_COLUMNS.copy()}
 
 
-def save_config(cfg: dict):
+def save_config(cfg: dict) -> str:
+    """Save config locally and, if GITHUB_TOKEN is set, commit to the repo.
+    Returns 'remote' | 'local' | 'error'."""
+    import base64
+    import urllib.error
+
+    content_str = json.dumps(cfg, indent=2)
+
+    # ── GitHub API (persistent across Streamlit Cloud restarts) ──────────────
     try:
-        with open(CONFIG_FILE, "w") as f:
-            json.dump(cfg, f, indent=2)
+        token = st.secrets.get("GITHUB_TOKEN", "")
+        repo  = st.secrets.get("GITHUB_REPO", "rajatb1-cyber/market-dashboard")
+        if token:
+            api_url = f"https://api.github.com/repos/{repo}/contents/watchlist_config.json"
+            headers = {
+                "Authorization": f"token {token}",
+                "Accept": "application/vnd.github.v3+json",
+                "Content-Type": "application/json",
+            }
+            # Fetch current SHA (required for update)
+            req = urllib.request.Request(api_url, headers=headers)
+            with urllib.request.urlopen(req) as resp:
+                sha = json.loads(resp.read())["sha"]
+
+            payload = json.dumps({
+                "message": "chore: update watchlist config",
+                "content": base64.b64encode(content_str.encode()).decode(),
+                "sha": sha,
+            }).encode()
+            req = urllib.request.Request(api_url, data=payload, method="PUT",
+                                         headers=headers)
+            with urllib.request.urlopen(req):
+                pass
+
+            # Also write locally so the current process sees it immediately
+            try:
+                with open(CONFIG_FILE, "w") as f:
+                    f.write(content_str)
+            except Exception:
+                pass
+            return "remote"
     except Exception:
         pass
+
+    # ── Local fallback ────────────────────────────────────────────────────────
+    try:
+        with open(CONFIG_FILE, "w") as f:
+            f.write(content_str)
+        return "local"
+    except Exception:
+        return "error"
 
 
 # ── Watchlist data ─────────────────────────────────────────────────────────────

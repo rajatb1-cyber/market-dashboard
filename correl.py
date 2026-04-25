@@ -328,9 +328,14 @@ def render_correl():
         if st.button("💾 Save Grid", use_container_width=True):
             cfg["correl_rows"] = st.session_state.get("corr_rows", [])
             cfg["correl_cols"] = st.session_state.get("corr_cols", [])
-            save_config(cfg)
+            result = save_config(cfg)
             st.session_state.wl_config = cfg
-            st.toast("Grid saved!", icon="✅")
+            if result == "remote":
+                st.toast("Saved to GitHub — will persist across restarts!", icon="✅")
+            elif result == "local":
+                st.toast("Saved locally (add GITHUB_TOKEN to secrets for persistence).", icon="⚠️")
+            else:
+                st.toast("Save failed — check secrets config.", icon="❌")
         st.markdown("</div>", unsafe_allow_html=True)
 
     # ── Timeframe ─────────────────────────────────────────────────────────────
