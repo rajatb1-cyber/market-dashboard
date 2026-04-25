@@ -190,10 +190,6 @@
   ],
   "prediction_markets": [
     {
-      "slug": "us-x-iran-permanent-peace-deal-by-april-22-2026",
-      "name": "US x Iran permanent peace deal by April 22, 2026?"
-    },
-    {
       "slug": "us-x-iran-permanent-peace-deal-by-april-30-2026-925",
       "name": "US x Iran permanent peace deal by April 30, 2026?"
     },
@@ -204,10 +200,6 @@
     {
       "slug": "us-x-iran-permanent-peace-deal-by-june-30-2026",
       "name": "US x Iran permanent peace deal by June 30, 2026?"
-    },
-    {
-      "slug": "us-x-iran-permanent-peace-deal-by-april-24-2026",
-      "name": "US x Iran permanent peace deal by April 24, 2026?"
     }
   ]
 }
