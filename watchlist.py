@@ -796,13 +796,13 @@ def build_instrument_chart(df: pd.DataFrame, name: str, ticker: str,
 
     # ── RSI (14) ───────────────────────────────────────────────────────────
     if "RSI" in df:
-        fig.add_hrect(y0=70, y1=100, fillcolor="rgba(220,38,38,0.05)",
+        fig.add_hrect(y0=75, y1=100, fillcolor="rgba(220,38,38,0.05)",
                       line_width=0, row=2, col=1)
-        fig.add_hrect(y0=0,  y1=30,  fillcolor="rgba(5,150,105,0.05)",
+        fig.add_hrect(y0=0,  y1=25,  fillcolor="rgba(5,150,105,0.05)",
                       line_width=0, row=2, col=1)
-        fig.add_hline(y=70, line_dash="dot", line_color="#DC2626",
+        fig.add_hline(y=75, line_dash="dot", line_color="#DC2626",
                       line_width=1.5, row=2, col=1)
-        fig.add_hline(y=30, line_dash="dot", line_color="#059669",
+        fig.add_hline(y=25, line_dash="dot", line_color="#059669",
                       line_width=1.5, row=2, col=1)
         fig.add_trace(go.Scatter(
             x=df.index, y=df["RSI"],
