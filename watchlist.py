@@ -851,21 +851,24 @@ def build_instrument_chart(df: pd.DataFrame, name: str, ticker: str,
     fig.update_yaxes(gridcolor="#E8EDF5", zeroline=False, linecolor="#E2E8F0",
                      showspikes=True, spikecolor="#94A3B8", spikethickness=1)
     fig.update_yaxes(rangemode="normal", autorange=True, row=1, col=1)
-    # Pin RSI panel ranges last — data-driven with padding, clamped to [0, 100]
-    def _rsi_axis_range(series: pd.Series, pad: float = 5.0):
+    # Pin RSI panel ranges — always include threshold lines with padding
+    def _rsi_axis_range(series: pd.Series, oversold: float, overbought: float,
+                        pad: float = 5.0):
         s = series.dropna()
-        if s.empty:
-            return [0, 100]
-        return [max(0.0, float(s.min()) - pad), min(100.0, float(s.max()) + pad)]
+        data_lo = float(s.min()) if not s.empty else oversold
+        data_hi = float(s.max()) if not s.empty else overbought
+        lo = min(data_lo, oversold) - pad
+        hi = max(data_hi, overbought) + pad
+        return [max(0.0, lo), min(100.0, hi)]
 
     if "RSI" in df:
         fig.update_layout(yaxis2=dict(
-            range=_rsi_axis_range(df["RSI"]),
+            range=_rsi_axis_range(df["RSI"], oversold=25, overbought=75),
             tickfont=dict(size=10), gridcolor="#E8EDF5",
         ))
     if "RSI30" in df:
         fig.update_layout(yaxis3=dict(
-            range=_rsi_axis_range(df["RSI30"]),
+            range=_rsi_axis_range(df["RSI30"], oversold=30, overbought=70),
             tickfont=dict(size=10), gridcolor="#E8EDF5",
         ))
     return fig
