@@ -1,38 +1,191 @@
 {
   "instruments": [
-    {"name": "S&P 500",      "ticker": "^GSPC",    "class": "Equity"},
-    {"name": "NASDAQ",       "ticker": "^IXIC",    "class": "Equity"},
-    {"name": "FTSE 100",     "ticker": "^FTSE",    "class": "Equity"},
-    {"name": "DAX",          "ticker": "^GDAXI",   "class": "Equity"},
-    {"name": "Dow Jones",    "ticker": "^DJI",     "class": "Equity"},
-    {"name": "Euro Stoxx 50","ticker": "^STOXX50E","class": "Equity"},
-    {"name": "Russell 2000", "ticker": "^RUT",     "class": "Equity"},
-    {"name": "Nikkei 225",   "ticker": "^N225",    "class": "Equity"},
-    {"name": "NIFTY 50",     "ticker": "^NSEI",    "class": "Equity"},
-    {"name": "BBDXY",        "ticker": "BBDXY_SYNTH", "class": "FX"},
-    {"name": "EUR/USD",      "ticker": "EURUSD=X", "class": "FX"},
-    {"name": "GBP/USD",      "ticker": "GBPUSD=X", "class": "FX"},
-    {"name": "USD/JPY",      "ticker": "JPY=X",    "class": "FX"},
-    {"name": "USD/CHF",      "ticker": "CHF=X",    "class": "FX"},
-    {"name": "USD/INR",      "ticker": "INR=X",    "class": "FX"},
-    {"name": "USD/CNH",      "ticker": "USDCNH=X", "class": "FX"},
-    {"name": "USD/KRW",      "ticker": "KRW=X",    "class": "FX"},
-    {"name": "AUD/USD",      "ticker": "AUDUSD=X", "class": "FX"},
-    {"name": "USD/CAD",      "ticker": "CAD=X",    "class": "FX"},
-    {"name": "USD/BRL",      "ticker": "BRL=X",    "class": "FX"},
-    {"name": "US 10Y",       "ticker": "^TNX",     "class": "Rates"},
-    {"name": "US 2Y",        "ticker": "^US2YT",   "class": "Rates"},
-    {"name": "EUR 10Y",      "ticker": "^ECB10Y",  "class": "Rates"},
-    {"name": "EUR 2Y",       "ticker": "^ECB2Y",   "class": "Rates"},
-    {"name": "Gold",         "ticker": "GC=F",     "class": "Commodity"},
-    {"name": "WTI Oil",      "ticker": "CL=F",     "class": "Commodity"},
-    {"name": "Brent Crude",  "ticker": "BZ=F",     "class": "Commodity"},
-    {"name": "Silver",       "ticker": "SI=F",     "class": "Commodity"},
-    {"name": "Copper",       "ticker": "HG=F",     "class": "Commodity"},
-    {"name": "Bitcoin",      "ticker": "BTC-USD",  "class": "Crypto"},
-    {"name": "Ethereum",     "ticker": "ETH-USD",  "class": "Crypto"}
+    {
+      "name": "S&P 500",
+      "ticker": "^GSPC",
+      "class": "Equity"
+    },
+    {
+      "name": "NASDAQ",
+      "ticker": "^IXIC",
+      "class": "Equity"
+    },
+    {
+      "name": "FTSE 100",
+      "ticker": "^FTSE",
+      "class": "Equity"
+    },
+    {
+      "name": "DAX",
+      "ticker": "^GDAXI",
+      "class": "Equity"
+    },
+    {
+      "name": "Dow Jones",
+      "ticker": "^DJI",
+      "class": "Equity"
+    },
+    {
+      "name": "Euro Stoxx 50",
+      "ticker": "^STOXX50E",
+      "class": "Equity"
+    },
+    {
+      "name": "Russell 2000",
+      "ticker": "^RUT",
+      "class": "Equity"
+    },
+    {
+      "name": "Nikkei 225",
+      "ticker": "^N225",
+      "class": "Equity"
+    },
+    {
+      "name": "NIFTY 50",
+      "ticker": "^NSEI",
+      "class": "Equity"
+    },
+    {
+      "name": "BBDXY",
+      "ticker": "BBDXY_SYNTH",
+      "class": "FX"
+    },
+    {
+      "name": "EUR/USD",
+      "ticker": "EURUSD=X",
+      "class": "FX"
+    },
+    {
+      "name": "GBP/USD",
+      "ticker": "GBPUSD=X",
+      "class": "FX"
+    },
+    {
+      "name": "USD/JPY",
+      "ticker": "JPY=X",
+      "class": "FX"
+    },
+    {
+      "name": "USD/CHF",
+      "ticker": "CHF=X",
+      "class": "FX"
+    },
+    {
+      "name": "USD/INR",
+      "ticker": "INR=X",
+      "class": "FX"
+    },
+    {
+      "name": "USD/CNH",
+      "ticker": "USDCNH=X",
+      "class": "FX"
+    },
+    {
+      "name": "USD/KRW",
+      "ticker": "KRW=X",
+      "class": "FX"
+    },
+    {
+      "name": "AUD/USD",
+      "ticker": "AUDUSD=X",
+      "class": "FX"
+    },
+    {
+      "name": "USD/CAD",
+      "ticker": "CAD=X",
+      "class": "FX"
+    },
+    {
+      "name": "USD/BRL",
+      "ticker": "BRL=X",
+      "class": "FX"
+    },
+    {
+      "name": "US 10Y",
+      "ticker": "^TNX",
+      "class": "Rates"
+    },
+    {
+      "name": "US 2Y",
+      "ticker": "^US2YT",
+      "class": "Rates"
+    },
+    {
+      "name": "EUR 10Y",
+      "ticker": "^ECB10Y",
+      "class": "Rates"
+    },
+    {
+      "name": "EUR 2Y",
+      "ticker": "^ECB2Y",
+      "class": "Rates"
+    },
+    {
+      "name": "Gold",
+      "ticker": "GC=F",
+      "class": "Commodity"
+    },
+    {
+      "name": "WTI Oil",
+      "ticker": "CL=F",
+      "class": "Commodity"
+    },
+    {
+      "name": "Brent Crude",
+      "ticker": "BZ=F",
+      "class": "Commodity"
+    },
+    {
+      "name": "Silver",
+      "ticker": "SI=F",
+      "class": "Commodity"
+    },
+    {
+      "name": "Copper",
+      "ticker": "HG=F",
+      "class": "Commodity"
+    },
+    {
+      "name": "Bitcoin",
+      "ticker": "BTC-USD",
+      "class": "Crypto"
+    },
+    {
+      "name": "Ethereum",
+      "ticker": "ETH-USD",
+      "class": "Crypto"
+    }
   ],
-  "columns": ["Price", "Change %", "Weekly %", "Monthly %", "RSI (14)", "RSI (30)", "52W High", "52W Low"],
-  "correl_rows": ["S&P 500", "NASDAQ", "US 10Y", "Gold", "Bitcoin"],
-  "correl_cols": ["S&P 500", "NASDAQ", "EUR/USD", "US 2Y", "EUR 2Y"]
+  "columns": [
+    "Price",
+    "Change %",
+    "Weekly %",
+    "Monthly %",
+    "RSI (14)",
+    "RSI (30)",
+    "52W High",
+    "52W Low"
+  ],
+  "correl_rows": [
+    "S&P 500",
+    "NASDAQ",
+    "US 10Y",
+    "BBDXY",
+    "US 2Y",
+    "EUR 10Y",
+    "Gold",
+    "WTI Oil",
+    "Bitcoin"
+  ],
+  "correl_cols": [
+    "S&P 500",
+    "NASDAQ",
+    "US 10Y",
+    "BBDXY",
+    "US 2Y",
+    "EUR 10Y",
+    "Gold",
+    "WTI Oil",
+    "Bitcoin"
+  ]
 }
