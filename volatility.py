@@ -14,6 +14,7 @@ VOL_INSTRUMENTS = [
     {"name": "VXD",   "ticker": "^VXD",   "group": "Equity",    "desc": "Dow Jones implied vol"},
     {"name": "VIX3M", "ticker": "^VIX3M", "group": "VIX Term",  "desc": "S&P 500 3-month implied vol"},
     {"name": "SKEW",  "ticker": "^SKEW",  "group": "Skew",      "desc": "S&P 500 tail risk index"},
+    {"name": "MOVE",  "ticker": "^MOVE",  "group": "Rates",     "desc": "ICE BofA bond market implied vol"},
     {"name": "OVX",   "ticker": "^OVX",   "group": "Commodity", "desc": "Crude Oil implied vol"},
     {"name": "GVZ",   "ticker": "^GVZ",   "group": "Commodity", "desc": "Gold implied vol"},
 ]
@@ -158,13 +159,13 @@ def render_volatility():
         rows.append({
             "Index":       inst["name"],
             "Description": inst["desc"],
-            "Level":       round(s["level"], 2),
+            "Level":       f"{s['level']:.2f}",
             "1D Δ (pts)":  _fmt_change(s["d1"]),
             "1D %":        _fmt_change(s["d1pct"], "%"),
             "1W Δ (pts)":  _fmt_change(s["d5"]),
             "1M Δ (pts)":  _fmt_change(s["d21"]),
-            "52W High":    round(hi52, 2),
-            "52W Low":     round(lo52, 2),
+            "52W High":    f"{hi52:.2f}",
+            "52W Low":     f"{lo52:.2f}",
             "52W %ile":    f"{pct_of_range:.0f}%",
         })
 
