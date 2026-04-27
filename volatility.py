@@ -264,7 +264,26 @@ def render_volatility():
             })
 
         df_rv = pd.DataFrame(rvol_rows).set_index("Asset")
-        st.dataframe(df_rv, use_container_width=True)
+
+        colors_1m = []
+        for r in rvol_rows:
+            try:
+                v1m = float(r["1M RV"]) if r["1M RV"] != "—" else None
+                v3m = float(r["3M RV"]) if r["3M RV"] != "—" else None
+                if v1m is not None and v3m is not None and v3m > 0:
+                    if v1m > v3m * 1.2:
+                        colors_1m.append("color: #DC2626; font-weight: 700")
+                    elif v1m < v3m * 0.8:
+                        colors_1m.append("color: #059669; font-weight: 700")
+                    else:
+                        colors_1m.append("")
+                else:
+                    colors_1m.append("")
+            except Exception:
+                colors_1m.append("")
+
+        styled_rv = df_rv.style.apply(lambda _: colors_1m, subset=["1M RV"])
+        st.dataframe(styled_rv, use_container_width=True)
 
     except Exception as e:
         st.error(f"Realised vol error: {e}")
