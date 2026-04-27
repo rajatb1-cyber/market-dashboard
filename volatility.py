@@ -23,6 +23,49 @@ _TICKERS = tuple(i["ticker"] for i in VOL_INSTRUMENTS)
 _NAME_MAP = {i["ticker"]: i["name"] for i in VOL_INSTRUMENTS}
 _DESC_MAP = {i["ticker"]: i["desc"] for i in VOL_INSTRUMENTS}
 
+# ── Realized vol instruments ───────────────────────────────────────────────────
+RVOL_INSTRUMENTS = [
+    {"name": "S&P 500", "ticker": "^GSPC",      "class": "Equity",    "rates": False},
+    {"name": "NASDAQ",  "ticker": "^IXIC",      "class": "Equity",    "rates": False},
+    {"name": "BBDXY",   "ticker": "BBDXY_SYNTH","class": "FX",        "rates": False},
+    {"name": "EUR/USD", "ticker": "EURUSD=X",   "class": "FX",        "rates": False},
+    {"name": "GBP/USD", "ticker": "GBPUSD=X",   "class": "FX",        "rates": False},
+    {"name": "USD/JPY", "ticker": "JPY=X",      "class": "FX",        "rates": False},
+    {"name": "US 10Y",  "ticker": "^TNX",       "class": "Rates",     "rates": True},
+    {"name": "US 2Y",   "ticker": "^US2YT",     "class": "Rates",     "rates": True},
+    {"name": "EUR 10Y", "ticker": "^ECB10Y",    "class": "Rates",     "rates": True},
+    {"name": "EUR 2Y",  "ticker": "^ECB2Y",     "class": "Rates",     "rates": True},
+    {"name": "Brent",   "ticker": "BZ=F",       "class": "Commodity", "rates": False},
+    {"name": "WTI",     "ticker": "CL=F",       "class": "Commodity", "rates": False},
+    {"name": "Gold",    "ticker": "GC=F",       "class": "Commodity", "rates": False},
+    {"name": "Bitcoin", "ticker": "BTC-USD",    "class": "Crypto",    "rates": False},
+]
+
+
+def _fetch_rvol_series(ticker: str) -> pd.Series:
+    try:
+        df = fetch_chart_data(ticker, period="2y", interval="1d")
+        if df is None or df.empty:
+            return pd.Series(dtype=float)
+        return df["Close"].squeeze().astype(float).dropna()
+    except Exception:
+        return pd.Series(dtype=float)
+
+
+def _ann_rvol(close: pd.Series, window: int, is_rates: bool) -> float | None:
+    s = close.dropna()
+    if len(s) < window + 1:
+        return None
+    if is_rates:
+        daily = s.diff().dropna() * 100        # % points → bps
+    else:
+        daily = np.log(s / s.shift(1)).dropna() * 100   # log returns in %
+    tail = daily.iloc[-window:]
+    if len(tail) < window:
+        return None
+    rv = float(tail.std() * np.sqrt(252))
+    return rv if np.isfinite(rv) else None
+
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
@@ -185,6 +228,48 @@ def render_volatility():
 
         styled = df_tbl.style.apply(_style_row, axis=1)
         st.dataframe(styled, use_container_width=True)
+
+    # ── Realised Vol table ─────────────────────────────────────────────────────
+    st.markdown("#### Realised Volatility")
+    st.caption(
+        "Annualized realized vol — Equities / FX / Commodities / Crypto in **%** · "
+        "Rates in **bps** (daily yield changes). "
+        "Windows: 1W = 5d, 1M = 21d, 3M = 63d, 6M = 126d."
+    )
+
+    try:
+        def _fmt_rv(v: float | None) -> str:
+            return f"{v:.1f}" if v is not None else "—"
+
+        rvol_rows = []
+        for inst in RVOL_INSTRUMENTS:
+            is_rates = inst["rates"]
+            unit     = "bps" if is_rates else "%"
+            try:
+                close = _fetch_rvol_series(inst["ticker"])
+                rv1w  = _ann_rvol(close, 5,   is_rates)
+                rv1m  = _ann_rvol(close, 21,  is_rates)
+                rv3m  = _ann_rvol(close, 63,  is_rates)
+                rv6m  = _ann_rvol(close, 126, is_rates)
+            except Exception:
+                rv1w = rv1m = rv3m = rv6m = None
+            rvol_rows.append({
+                "Asset":  inst["name"],
+                "Class":  inst["class"],
+                "Unit":   unit,
+                "1W RV":  _fmt_rv(rv1w),
+                "1M RV":  _fmt_rv(rv1m),
+                "3M RV":  _fmt_rv(rv3m),
+                "6M RV":  _fmt_rv(rv6m),
+            })
+
+        df_rv = pd.DataFrame(rvol_rows).set_index("Asset")
+        st.dataframe(df_rv, use_container_width=True)
+
+    except Exception as e:
+        st.error(f"Realised vol error: {e}")
+
+    st.markdown("")
 
     # ── Historical chart ───────────────────────────────────────────────────────
     st.markdown("#### Historical chart")
