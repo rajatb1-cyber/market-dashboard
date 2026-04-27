@@ -25,20 +25,20 @@ _DESC_MAP = {i["ticker"]: i["desc"] for i in VOL_INSTRUMENTS}
 
 # ── Realized vol instruments ───────────────────────────────────────────────────
 RVOL_INSTRUMENTS = [
-    {"name": "S&P 500", "ticker": "^GSPC",      "class": "Equity",    "rates": False},
-    {"name": "NASDAQ",  "ticker": "^IXIC",      "class": "Equity",    "rates": False},
-    {"name": "BBDXY",   "ticker": "BBDXY_SYNTH","class": "FX",        "rates": False},
-    {"name": "EUR/USD", "ticker": "EURUSD=X",   "class": "FX",        "rates": False},
-    {"name": "GBP/USD", "ticker": "GBPUSD=X",   "class": "FX",        "rates": False},
-    {"name": "USD/JPY", "ticker": "JPY=X",      "class": "FX",        "rates": False},
-    {"name": "US 10Y",  "ticker": "^TNX",       "class": "Rates",     "rates": True},
-    {"name": "US 2Y",   "ticker": "^US2YT",     "class": "Rates",     "rates": True},
-    {"name": "EUR 10Y", "ticker": "^ECB10Y",    "class": "Rates",     "rates": True},
-    {"name": "EUR 2Y",  "ticker": "^ECB2Y",     "class": "Rates",     "rates": True},
-    {"name": "Brent",   "ticker": "BZ=F",       "class": "Commodity", "rates": False},
-    {"name": "WTI",     "ticker": "CL=F",       "class": "Commodity", "rates": False},
-    {"name": "Gold",    "ticker": "GC=F",       "class": "Commodity", "rates": False},
-    {"name": "Bitcoin", "ticker": "BTC-USD",    "class": "Crypto",    "rates": False},
+    {"name": "S&P 500", "ticker": "^GSPC",      "class": "Equity",    "rates": False, "iv_ticker": "^VIX"},
+    {"name": "NASDAQ",  "ticker": "^IXIC",      "class": "Equity",    "rates": False, "iv_ticker": "^VXN"},
+    {"name": "BBDXY",   "ticker": "BBDXY_SYNTH","class": "FX",        "rates": False, "iv_ticker": None},
+    {"name": "EUR/USD", "ticker": "EURUSD=X",   "class": "FX",        "rates": False, "iv_ticker": None},
+    {"name": "GBP/USD", "ticker": "GBPUSD=X",   "class": "FX",        "rates": False, "iv_ticker": None},
+    {"name": "USD/JPY", "ticker": "JPY=X",      "class": "FX",        "rates": False, "iv_ticker": None},
+    {"name": "US 10Y",  "ticker": "^TNX",       "class": "Rates",     "rates": True,  "iv_ticker": None},
+    {"name": "US 2Y",   "ticker": "^US2YT",     "class": "Rates",     "rates": True,  "iv_ticker": None},
+    {"name": "EUR 10Y", "ticker": "^ECB10Y",    "class": "Rates",     "rates": True,  "iv_ticker": None},
+    {"name": "EUR 2Y",  "ticker": "^ECB2Y",     "class": "Rates",     "rates": True,  "iv_ticker": None},
+    {"name": "Brent",   "ticker": "BZ=F",       "class": "Commodity", "rates": False, "iv_ticker": None},
+    {"name": "WTI",     "ticker": "CL=F",       "class": "Commodity", "rates": False, "iv_ticker": "^OVX"},
+    {"name": "Gold",    "ticker": "GC=F",       "class": "Commodity", "rates": False, "iv_ticker": "^GVZ"},
+    {"name": "Bitcoin", "ticker": "BTC-USD",    "class": "Crypto",    "rates": False, "iv_ticker": None},
 ]
 
 
@@ -245,6 +245,8 @@ def render_volatility():
         for inst in RVOL_INSTRUMENTS:
             is_rates = inst["rates"]
             unit     = "bps" if is_rates else "%"
+            iv_tkr   = inst.get("iv_ticker")
+            iv_level = stats[iv_tkr]["level"] if iv_tkr and iv_tkr in stats else None
             try:
                 close = _fetch_rvol_series(inst["ticker"])
                 rv1w  = _ann_rvol(close, 5,   is_rates)
@@ -254,13 +256,14 @@ def render_volatility():
             except Exception:
                 rv1w = rv1m = rv3m = rv6m = None
             rvol_rows.append({
-                "Asset":  inst["name"],
-                "Class":  inst["class"],
-                "Unit":   unit,
-                "1W RV":  _fmt_rv(rv1w),
-                "1M RV":  _fmt_rv(rv1m),
-                "3M RV":  _fmt_rv(rv3m),
-                "6M RV":  _fmt_rv(rv6m),
+                "Asset":    inst["name"],
+                "Class":    inst["class"],
+                "Unit":     unit,
+                "Impl. Vol": f"{iv_level:.2f}" if iv_level is not None else "—",
+                "1W RV":    _fmt_rv(rv1w),
+                "1M RV":    _fmt_rv(rv1m),
+                "3M RV":    _fmt_rv(rv3m),
+                "6M RV":    _fmt_rv(rv6m),
             })
 
         df_rv = pd.DataFrame(rvol_rows).set_index("Asset")
@@ -282,7 +285,7 @@ def render_volatility():
             except Exception:
                 colors_1m.append("")
 
-        styled_rv = df_rv.style.apply(lambda _: colors_1m, subset=["1M RV"])
+        styled_rv = df_rv.style.apply(lambda _: colors_1m, subset=["1M RV"])  # type: ignore[arg-type]
         st.dataframe(styled_rv, use_container_width=True)
 
     except Exception as e:
