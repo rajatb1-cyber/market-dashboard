@@ -18,8 +18,8 @@ from datetime import datetime, timedelta, date
 # ── Config ─────────────────────────────────────────────────────────────────────
 CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "watchlist_config.json")
 
-ALL_COLUMNS     = ["Price", "Change %", "Change", "Weekly %", "Monthly %", "RSI (14)", "RSI (30)", "52W High", "52W Low", "Volume"]
-DEFAULT_COLUMNS = ["Price", "Change %", "Weekly %", "Monthly %", "RSI (14)", "RSI (30)", "52W High", "52W Low"]
+ALL_COLUMNS     = ["Price", "Change %", "Change", "Weekly %", "Monthly %", "YTD %", "RSI (14)", "RSI (30)", "52W High", "52W Low", "Volume"]
+DEFAULT_COLUMNS = ["Price", "Change %", "Weekly %", "Monthly %", "YTD %", "RSI (14)", "RSI (30)", "52W High", "52W Low"]
 ASSET_CLASSES   = ["Equity", "FX", "Rates", "Commodity", "Crypto", "Other"]
 
 CHART_TIMEFRAMES = {
@@ -435,6 +435,14 @@ def compute_row(inst: dict, df, columns: list) -> dict:
                 row[c] = ((last - ref) * 100) if ref is not None else None
             else:
                 row[c] = ((last - ref) / ref * 100) if ref else None
+        elif c == "YTD %":
+            cur_year = close.index[-1].year
+            prev_year = close[close.index.year < cur_year]
+            ref = _f(prev_year.iloc[-1]) if not prev_year.empty else _f(close.iloc[0])
+            if is_rate:
+                row[c] = ((last - ref) * 100) if ref is not None else None
+            else:
+                row[c] = ((last - ref) / ref * 100) if ref else None
         elif c == "RSI (14)":
             try:
                 rsi = ta_lib.momentum.RSIIndicator(close, window=14).rsi().dropna()
@@ -464,7 +472,7 @@ def compute_row(inst: dict, df, columns: list) -> dict:
 def _fmt(val, col: str, cls: str = "") -> str:
     if val is None or (isinstance(val, float) and np.isnan(val)):
         return "—"
-    if col in ("Change %", "Weekly %", "Monthly %"):
+    if col in ("Change %", "Weekly %", "Monthly %", "YTD %"):
         if cls == "Rates":
             return f"{int(round(val)):+d}bp"
         return f"{val:+.2f}%"
@@ -497,7 +505,7 @@ def build_display_df(df_rows: pd.DataFrame, active_cols: list) -> pd.DataFrame:
 
 def style_table(df_display: pd.DataFrame, active_cols: list):
     """Apply green/red text to change columns via pandas Styler."""
-    pct_cols = [c for c in active_cols if c in ("Change %", "Change", "Weekly %", "Monthly %")]
+    pct_cols = [c for c in active_cols if c in ("Change %", "Change", "Weekly %", "Monthly %", "YTD %")]
     rsi_cols = [c for c in active_cols if c in ("RSI (14)", "RSI (30)")]
 
     def color_change(val: str):
