@@ -78,27 +78,29 @@ def _fetch_quotes(host: str, port: int, contracts: tuple) -> list:
             ask   = _val(ticker.ask)
             vol   = ticker.volume
 
-            mid   = (bid + ask) / 2 if (bid and ask) else None
-            # prefer last trade → bid/ask mid → prev close
-            price = last or mid or close
+            mid        = (bid + ask) / 2 if (bid and ask) else None
+            live_price = last or mid   # live only — do NOT fall back to close
+            src        = "last" if last else ("mid" if mid else "close")
+
+            # Still need a price to show implied rate; use close if nothing live
+            price = live_price or close
             if price is None:
                 continue
 
-            ref   = close  # change always vs prev close
-            chg_p = (price - ref) if (ref and price != ref) else None
-            chg_b = chg_p * 100   if chg_p is not None else None
-
-            src = "last" if last else ("mid" if mid else "close")
+            # Change is only meaningful when we have a live price vs yesterday's close
+            chg_p = (live_price - close) if (live_price and close) else None
+            chg_b = chg_p * 100         if chg_p is not None else None
 
             rows.append({
-                "label":     label,
-                "expiry":    expiry,
-                "price":     price,
-                "impl_rate": 100 - price,
-                "chg_p":     chg_p,
-                "chg_b":     chg_b,
-                "volume":    int(vol) if vol and vol > 0 else None,
-                "src":       src,
+                "label":      label,
+                "expiry":     expiry,
+                "price":      live_price,   # None when only close available
+                "close":      close,
+                "impl_rate":  100 - price,  # use best available for curve
+                "chg_p":      chg_p,
+                "chg_b":      chg_b,
+                "volume":     int(vol) if vol and vol > 0 else None,
+                "src":        src,
             })
 
         for t in tickers:
@@ -238,9 +240,15 @@ def render_stir():
             chg_colors.append("")
             rate_colors.append("")
 
+        # Price column: live price if available, else show prev close in italics marker
+        if r["price"] is not None:
+            price_str = _fmt(r["price"], "{:.3f}")
+        else:
+            price_str = _fmt(r["close"], "{:.3f} *")  # * = prev close only
+
         table_rows.append({
             "Contract":   r["label"],
-            "Price":      _fmt(r["price"], "{:.3f}"),
+            "Price":      price_str,
             "Impl. Rate": _fmt(r["impl_rate"], "{:.3f}%"),
             "Chg (pts)":  _fmt(r["chg_p"], "{:+.3f}"),
             "Chg (bps)":  _fmt(r["chg_b"], "{:+.1f}"),
