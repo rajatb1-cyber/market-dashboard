@@ -81,25 +81,26 @@ def _fetch_quotes(host: str, port: int, contracts: tuple) -> tuple:
         # (e.g. "20261215").  Match back to our labels using the YYYYMM prefix.
         label_by_exp6 = {exp: lbl for lbl, exp in contracts}  # "202612" → "Dec 26"
 
-        ticker_triples = []  # (ticker, label, exp6)
+        # Keep qc alongside ticker so we can fall back to historical data
+        ticker_quads = []  # (ticker, qc, label, exp6)
         for qc in qualified_list:
             exp6 = qc.lastTradeDateOrContractMonth[:6]
             label = label_by_exp6.get(exp6)
             if label:
                 t = ib.reqMktData(qc, "", False, False)
-                ticker_triples.append((t, label, exp6))
+                ticker_quads.append((t, qc, label, exp6))
 
-        if not ticker_triples:
+        if not ticker_quads:
             return [], []
 
-        # ── Wait for data ──────────────────────────────────────────────────────
-        # Frozen mode (2): returns last available data even when market is closed.
-        # IBKR will automatically upgrade to live (1) if the market is currently open.
+        # ── Wait for frozen/live data ──────────────────────────────────────────
+        # Type 2 = frozen: returns last available snapshot even when market is
+        # closed.  IBKR upgrades to live (1) automatically when market is open.
         ib.reqMarketDataType(2)
         ib.sleep(5)
 
-        # ── Extract prices ─────────────────────────────────────────────────────
-        for ticker, label, expiry in ticker_triples:
+        # ── Extract prices (with historical fallback for missing contracts) ────
+        for ticker, qc, label, expiry in ticker_quads:
             last  = _v(ticker.last)
             close = _v(ticker.close)
             bid   = _v(ticker.bid)
@@ -107,18 +108,37 @@ def _fetch_quotes(host: str, port: int, contracts: tuple) -> tuple:
             vol   = ticker.volume
             mdt   = getattr(ticker, "marketDataType", "?")
 
-            debug.append({
-                "Contract": label,
-                "last":     last,
-                "bid":      bid,
-                "ask":      ask,
-                "close":    close,
-                "mktDataType": mdt,
-            })
-
             mid        = (bid + ask) / 2 if (bid and ask) else None
             live_price = last or mid
-            src        = "last" if last else ("mid" if mid else "close")
+
+            # ── Historical fallback for contracts with no frozen last trade ────
+            hist_price = None
+            if not live_price:
+                try:
+                    bars = ib.reqHistoricalData(
+                        qc, endDateTime="",
+                        durationStr="5 D", barSizeSetting="1 day",
+                        whatToShow="LAST", useRTH=False,
+                    )
+                    if bars:
+                        hist_price = _v(bars[-1].close)
+                        if not close and len(bars) >= 2:
+                            close = _v(bars[-2].close)
+                except Exception:
+                    pass
+
+            live_price = live_price or hist_price
+            src = "last" if last else ("mid" if mid else ("hist" if hist_price else "close"))
+
+            debug.append({
+                "Contract":    label,
+                "last":        last,
+                "bid":         bid,
+                "ask":         ask,
+                "close":       close,
+                "hist":        hist_price,
+                "mktDataType": mdt,
+            })
 
             # For curve display, fall back to close if no live price
             display_price = live_price or close
