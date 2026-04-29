@@ -26,16 +26,17 @@ _MONTH_NAMES = {3: "Mar", 6: "Jun", 9: "Sep", 12: "Dec"}
 _DURATION_MAP = {"1M": "1 M", "3M": "3 M", "6M": "6 M", "1Y": "1 Y"}
 
 
-def _active_contracts(n: int = 8) -> list[tuple]:
-    """Return next n quarterly Euribor contracts as (label, YYYYMM) tuples."""
+def _active_contracts(n: int = 9) -> list[tuple]:
+    """Return n quarterly Euribor contracts starting from the most recent past quarter."""
     today = date.today()
     qm, qy = today.month, today.year
-    for q in (3, 6, 9, 12):
-        if q >= qm:
+    # Start from the most recently expired/current quarterly month
+    for q in (12, 9, 6, 3):
+        if q <= qm:
             qm = q
             break
     else:
-        qm, qy = 3, qy + 1
+        qm, qy = 12, qy - 1
 
     out = []
     for _ in range(n):
@@ -69,8 +70,6 @@ def _fetch_quotes(host: str, port: int, contracts: tuple) -> list:
         for ticker, (label, expiry) in zip(tickers, contracts):
             last  = ticker.last  if ticker.last  and ticker.last  > 0 else None
             close = ticker.close if ticker.close and ticker.close > 0 else None
-            bid   = ticker.bid   if ticker.bid   and ticker.bid   > 0 else None
-            ask   = ticker.ask   if ticker.ask   and ticker.ask   > 0 else None
             vol   = ticker.volume
 
             price = last or close
@@ -84,8 +83,6 @@ def _fetch_quotes(host: str, port: int, contracts: tuple) -> list:
                 "label":     label,
                 "expiry":    expiry,
                 "price":     price,
-                "bid":       bid,
-                "ask":       ask,
                 "impl_rate": 100 - price,
                 "chg_p":     chg_p,
                 "chg_b":     chg_b,
@@ -214,13 +211,9 @@ def render_stir():
             chg_colors.append("")
             rate_colors.append("")
 
-        bid_ask = (f"{r['bid']:.3f} / {r['ask']:.3f}"
-                   if r["bid"] and r["ask"] else "—")
-
         table_rows.append({
             "Contract":   r["label"],
             "Price":      _fmt(r["price"], "{:.3f}"),
-            "Bid/Ask":    bid_ask,
             "Impl. Rate": _fmt(r["impl_rate"], "{:.3f}%"),
             "Chg (pts)":  _fmt(r["chg_p"], "{:+.3f}"),
             "Chg (bps)":  _fmt(r["chg_b"], "{:+.1f}"),
