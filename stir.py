@@ -48,6 +48,14 @@ def _active_contracts(n: int = 9) -> list[tuple]:
     return out
 
 
+def _v(val):
+    """Return val if it's a valid positive finite float, else None."""
+    try:
+        return float(val) if (val is not None and val == val and val > 0) else None
+    except Exception:
+        return None
+
+
 @st.cache_data(ttl=15)
 def _fetch_quotes(host: str, port: int, contracts: tuple) -> list:
     """Fetch live Euribor futures quotes from IBKR. Returns list of dicts."""
@@ -56,54 +64,62 @@ def _fetch_quotes(host: str, port: int, contracts: tuple) -> list:
     try:
         ib.connect(host, port, clientId=15, timeout=10, readonly=True)
 
-        fut_objects = [
-            Future(symbol="I", exchange="ICEEU", currency="EUR",
-                   lastTradeDateOrContractMonth=expiry)
-            for _, expiry in contracts
-        ]
-        qualified = ib.qualifyContracts(*fut_objects)
-        if not qualified:
+        # Qualify each contract individually so a missing one doesn't shift indices
+        ticker_triples = []  # (ticker, label, expiry)
+        for label, expiry in contracts:
+            fut = Future(symbol="I", exchange="ICEEU", currency="EUR",
+                         lastTradeDateOrContractMonth=expiry)
+            try:
+                q = ib.qualifyContracts(fut)
+            except Exception:
+                q = []
+            if q:
+                t = ib.reqMktData(q[0], "", False, False)
+                ticker_triples.append((t, label, expiry))
+
+        if not ticker_triples:
             return []
 
-        tickers = [ib.reqMktData(c, "", False, False) for c in qualified]
-        ib.sleep(4)
+        # Poll until all tickers have either a last trade or a bid/ask (max 6 s)
+        for _ in range(60):
+            ib.sleep(0.1)
+            if all(
+                _v(t.last) or (_v(t.bid) and _v(t.ask))
+                for t, _, _ in ticker_triples
+            ):
+                break
 
-        for ticker, (label, expiry) in zip(tickers, contracts):
-            def _val(v):
-                return v if (v is not None and v > 0 and v == v) else None  # NaN guard
-
-            last  = _val(ticker.last)
-            close = _val(ticker.close)
-            bid   = _val(ticker.bid)
-            ask   = _val(ticker.ask)
+        for ticker, label, expiry in ticker_triples:
+            last  = _v(ticker.last)
+            close = _v(ticker.close)
+            bid   = _v(ticker.bid)
+            ask   = _v(ticker.ask)
             vol   = ticker.volume
 
             mid        = (bid + ask) / 2 if (bid and ask) else None
-            live_price = last or mid   # live only — do NOT fall back to close
+            live_price = last or mid          # live only — never fall back to close here
             src        = "last" if last else ("mid" if mid else "close")
 
-            # Still need a price to show implied rate; use close if nothing live
-            price = live_price or close
+            price = live_price or close       # best available for implied-rate curve
             if price is None:
                 continue
 
-            # Change is only meaningful when we have a live price vs yesterday's close
             chg_p = (live_price - close) if (live_price and close) else None
-            chg_b = chg_p * 100         if chg_p is not None else None
+            chg_b = chg_p * 100             if chg_p is not None else None
 
             rows.append({
-                "label":      label,
-                "expiry":     expiry,
-                "price":      live_price,   # None when only close available
-                "close":      close,
-                "impl_rate":  100 - price,  # use best available for curve
-                "chg_p":      chg_p,
-                "chg_b":      chg_b,
-                "volume":     int(vol) if vol and vol > 0 else None,
-                "src":        src,
+                "label":     label,
+                "expiry":    expiry,
+                "price":     live_price,      # None → market closed / no live data
+                "close":     close,
+                "impl_rate": 100 - price,
+                "chg_p":     chg_p,
+                "chg_b":     chg_b,
+                "volume":    int(vol) if vol and vol > 0 else None,
+                "src":       src,
             })
 
-        for t in tickers:
+        for t, _, _ in ticker_triples:
             try:
                 ib.cancelMktData(t.contract)
             except Exception:
