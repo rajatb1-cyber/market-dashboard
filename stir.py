@@ -4,15 +4,9 @@ import plotly.graph_objects as go
 from datetime import date
 
 try:
-    import nest_asyncio
-    nest_asyncio.apply()
-except ImportError:
-    pass
-
-try:
     from ib_insync import IB, Future, util
     _IB_AVAILABLE = True
-except ImportError:
+except Exception:
     _IB_AVAILABLE = False
 
 _MONTH_CODES = {3: "H", 6: "M", 9: "U", 12: "Z"}
@@ -151,8 +145,18 @@ def render_stir():
     st.markdown("### STIR — Short Term Interest Rate Futures")
 
     if not _IB_AVAILABLE:
-        st.error("`ib_insync` is not installed. Run `pip install ib_insync nest_asyncio`.")
+        st.info(
+            "**This tab requires a local IBKR connection and is not available on Streamlit Cloud.**  \n\n"
+            "To use it, run the app locally with IB Gateway open:  \n"
+            "```\npip install ib_insync nest_asyncio\nstreamlit run app.py\n```"
+        )
         return
+
+    try:
+        import nest_asyncio
+        nest_asyncio.apply()
+    except Exception:
+        pass
 
     # ── Connection settings ────────────────────────────────────────────────────
     with st.expander("⚙️  IBKR connection", expanded=False):
