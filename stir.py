@@ -92,14 +92,11 @@ def _fetch_quotes(host: str, port: int, contracts: tuple) -> tuple:
         if not ticker_triples:
             return [], []
 
-        # ── Poll for live data (max 8 s) ───────────────────────────────────────
-        for _ in range(80):
-            ib.sleep(0.1)
-            if all(
-                _v(t.last) or (_v(t.bid) and _v(t.ask))
-                for t, _, _ in ticker_triples
-            ):
-                break
+        # ── Wait for data ──────────────────────────────────────────────────────
+        # Frozen mode (2): returns last available data even when market is closed.
+        # IBKR will automatically upgrade to live (1) if the market is currently open.
+        ib.reqMarketDataType(2)
+        ib.sleep(5)
 
         # ── Extract prices ─────────────────────────────────────────────────────
         for ticker, label, expiry in ticker_triples:
