@@ -63,28 +63,45 @@ def _fetch_quotes(host: str, port: int, contracts: tuple) -> tuple:
     try:
         ib.connect(host, port, clientId=15, timeout=10, readonly=True)
 
-        # ── Batch qualify all contracts in one API round-trip ──────────────────
+        label_by_exp6 = {exp: lbl for lbl, exp in contracts}   # "202612" → "Dec 26"
+        expected_exp6 = set(label_by_exp6.keys())
+
+        # ── Batch qualify (fast path) ──────────────────────────────────────────
         fut_objects = [
             Future(symbol="I", exchange="ICEEU", currency="EUR",
                    lastTradeDateOrContractMonth=expiry)
             for _, expiry in contracts
         ]
         try:
-            qualified_list = ib.qualifyContracts(*fut_objects)
+            qualified_list = list(ib.qualifyContracts(*fut_objects))
         except Exception:
             qualified_list = []
+
+        # ── Retry any contracts the batch silently dropped ─────────────────────
+        got_exp6 = {qc.lastTradeDateOrContractMonth[:6] for qc in qualified_list}
+        missing  = expected_exp6 - got_exp6
+        for exp in sorted(missing):
+            try:
+                fut = Future(symbol="I", exchange="ICEEU", currency="EUR",
+                             lastTradeDateOrContractMonth=exp)
+                q = ib.qualifyContracts(fut)
+                if q:
+                    qualified_list.extend(q)
+            except Exception:
+                pass
 
         if not qualified_list:
             return [], []
 
-        # After qualification IBKR fills lastTradeDateOrContractMonth as YYYYMMDD
-        # (e.g. "20261215").  Match back to our labels using the YYYYMM prefix.
-        label_by_exp6 = {exp: lbl for lbl, exp in contracts}  # "202612" → "Dec 26"
-
-        # Keep qc alongside ticker so we can fall back to historical data
+        # Match each qualified contract back to its label via YYYYMM prefix
+        # Keep qc alongside ticker so we can fall back to historical data later
         ticker_quads = []  # (ticker, qc, label, exp6)
+        seen = set()
         for qc in qualified_list:
             exp6 = qc.lastTradeDateOrContractMonth[:6]
+            if exp6 in seen:
+                continue  # skip duplicates
+            seen.add(exp6)
             label = label_by_exp6.get(exp6)
             if label:
                 t = ib.reqMktData(qc, "", False, False)
@@ -260,6 +277,13 @@ def render_stir():
     if not rows:
         st.warning("Connected but no quotes returned — check your Euribor futures market data subscription in TWS.")
         return
+
+    # Warn about any contracts that never made it into the result
+    returned_labels = {r["label"] for r in rows}
+    all_labels      = {lbl for lbl, _ in contracts}
+    missing_labels  = all_labels - returned_labels
+    if missing_labels:
+        st.warning(f"Could not fetch data for: {', '.join(sorted(missing_labels))} — IBKR did not qualify these contracts.")
 
     # ── Debug expander ─────────────────────────────────────────────────────────
     with st.expander("Debug — raw IBKR tick values", expanded=False):
