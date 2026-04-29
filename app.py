@@ -14,6 +14,7 @@ from rates import render_rates
 from correl import render_correl
 from prediction import render_prediction
 from volatility import render_volatility
+from stir import render_stir
 
 # ── Page config ────────────────────────────────────────────────────────────────
 st.set_page_config(
@@ -665,7 +666,7 @@ def render_sidebar():
 def main():
     ticker, timeframe, overlays, show_volume, show_rsi, show_macd, auto_refresh = render_sidebar()
 
-    tab_charts, tab_macro, tab_rates, tab_correl, tab_pred, tab_vol = st.tabs(["📊  Charts & Indicators", "📋  Macro", "📈  Rates", "🔗  Correl", "🎯  Prediction", "⚡  Volatility"])
+    tab_charts, tab_macro, tab_rates, tab_correl, tab_pred, tab_vol, tab_stir = st.tabs(["📊  Charts & Indicators", "📋  Macro", "📈  Rates", "🔗  Correl", "🎯  Prediction", "⚡  Volatility", "📉  STIR"])
 
     with tab_macro:
         render_watchlist()
@@ -681,6 +682,9 @@ def main():
 
     with tab_vol:
         render_volatility()
+
+    with tab_stir:
+        render_stir()
 
     with tab_charts:
         # ── Market overview ──────────────────────────────────────────────────
