@@ -1,75 +1,148 @@
 import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
-import json
-import urllib.request
 from datetime import date
 
-_BARCHART_BASE = "https://ondemand.websol.barchart.com"
+try:
+    import nest_asyncio
+    nest_asyncio.apply()
+except ImportError:
+    pass
+
+try:
+    from ib_insync import IB, Future, util
+    _IB_AVAILABLE = True
+except ImportError:
+    _IB_AVAILABLE = False
 
 _MONTH_CODES = {3: "H", 6: "M", 9: "U", 12: "Z"}
 _MONTH_NAMES = {3: "Mar", 6: "Jun", 9: "Sep", 12: "Dec"}
 
+# Duration strings for IBKR historical data requests
+_DURATION_MAP = {"1M": "1 M", "3M": "3 M", "6M": "6 M", "1Y": "1 Y"}
 
-def _active_contracts(n: int = 8) -> list:
-    """Generate the next n quarterly Euribor futures contracts from today."""
+
+def _active_contracts(n: int = 8) -> list[tuple]:
+    """Return next n quarterly Euribor contracts as (label, YYYYMM) tuples."""
     today = date.today()
     qm, qy = today.month, today.year
     for q in (3, 6, 9, 12):
         if q >= qm:
-            qm, qy = q, qy
+            qm = q
             break
     else:
         qm, qy = 3, qy + 1
 
-    contracts = []
+    out = []
     for _ in range(n):
-        yy = str(qy)[-2:]
-        contracts.append({
-            "ticker": f"ER{_MONTH_CODES[qm]}{yy}",
-            "label":  f"{_MONTH_NAMES[qm]} {str(qy)[-2:]}",
-        })
+        out.append((f"{_MONTH_NAMES[qm]} {str(qy)[-2:]}", f"{qy}{qm:02d}"))
         qm += 3
         if qm > 12:
             qm, qy = 3, qy + 1
-    return contracts
+    return out
 
 
 @st.cache_data(ttl=60)
-def _barchart_quotes(api_key: str, symbols: str) -> list:
-    url = (
-        f"{_BARCHART_BASE}/getQuote.json?apikey={api_key}"
-        f"&symbols={symbols}"
-        f"&fields=lastPrice,previousClose,change,volume,openInterest,high,low"
-    )
-    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-    with urllib.request.urlopen(req, timeout=10) as r:
-        data = json.loads(r.read())
-    return data.get("results") or []
+def _fetch_quotes(host: str, port: int, contracts: tuple) -> list:
+    """Fetch live Euribor futures quotes from IBKR. Returns list of dicts."""
+    ib = IB()
+    rows = []
+    try:
+        ib.connect(host, port, clientId=15, timeout=10, readonly=True)
+
+        fut_objects = [
+            Future(symbol="I", exchange="LIFFE", currency="EUR",
+                   lastTradeDateOrContractMonth=expiry)
+            for _, expiry in contracts
+        ]
+        qualified = ib.qualifyContracts(*fut_objects)
+        if not qualified:
+            return []
+
+        tickers = [ib.reqMktData(c, "", False, False) for c in qualified]
+        ib.sleep(2)
+
+        for ticker, (label, expiry) in zip(tickers, contracts):
+            last  = ticker.last  if ticker.last  and ticker.last  > 0 else None
+            close = ticker.close if ticker.close and ticker.close > 0 else None
+            bid   = ticker.bid   if ticker.bid   and ticker.bid   > 0 else None
+            ask   = ticker.ask   if ticker.ask   and ticker.ask   > 0 else None
+            vol   = ticker.volume
+
+            price = last or close
+            if price is None:
+                continue
+
+            chg_p = (last - close) if (last and close) else None
+            chg_b = chg_p * 100    if chg_p is not None else None
+
+            rows.append({
+                "label":     label,
+                "expiry":    expiry,
+                "price":     price,
+                "bid":       bid,
+                "ask":       ask,
+                "impl_rate": 100 - price,
+                "chg_p":     chg_p,
+                "chg_b":     chg_b,
+                "volume":    int(vol) if vol and vol > 0 else None,
+            })
+
+        for t in tickers:
+            try:
+                ib.cancelMktData(t.contract)
+            except Exception:
+                pass
+
+    finally:
+        if ib.isConnected():
+            ib.disconnect()
+
+    return rows
 
 
 @st.cache_data(ttl=300)
-def _barchart_history(api_key: str, symbol: str, period: str = "3m") -> pd.DataFrame:
-    max_bars = {"1m": 31, "3m": 92, "6m": 183, "1y": 365}.get(period, 92)
-    url = (
-        f"{_BARCHART_BASE}/getHistory.json?apikey={api_key}"
-        f"&symbol={symbol}&type=daily&maxBars={max_bars}"
-    )
-    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-    with urllib.request.urlopen(req, timeout=10) as r:
-        data = json.loads(r.read())
-    results = data.get("results") or []
-    if not results:
-        return pd.DataFrame()
-    df = pd.DataFrame(results)
-    date_col = next((c for c in ("tradingDay", "timestamp", "date") if c in df.columns), None)
-    if not date_col:
-        return pd.DataFrame()
-    df["date"] = pd.to_datetime(df[date_col]).dt.normalize()
-    df = df.set_index("date").sort_index()
-    df["close"] = pd.to_numeric(df["close"], errors="coerce")
-    df["implied_rate"] = 100 - df["close"]
-    return df[["close", "implied_rate"]].dropna()
+def _fetch_history(host: str, port: int, expiry: str, duration: str) -> pd.DataFrame:
+    """Fetch daily OHLCV history for one Euribor futures contract."""
+    ib = IB()
+    try:
+        ib.connect(host, port, clientId=16, timeout=10, readonly=True)
+
+        contract = Future(symbol="I", exchange="LIFFE", currency="EUR",
+                          lastTradeDateOrContractMonth=expiry)
+        qualified = ib.qualifyContracts(contract)
+        if not qualified:
+            return pd.DataFrame()
+
+        bars = ib.reqHistoricalData(
+            qualified[0],
+            endDateTime="",
+            durationStr=duration,
+            barSizeSetting="1 day",
+            whatToShow="LAST",
+            useRTH=True,
+        )
+        if not bars:
+            return pd.DataFrame()
+
+        df = util.df(bars)[["date", "close"]].copy()
+        df["date"] = pd.to_datetime(df["date"]).dt.normalize()
+        df = df.set_index("date").sort_index()
+        df["implied_rate"] = 100 - df["close"]
+        return df.dropna()
+
+    finally:
+        if ib.isConnected():
+            ib.disconnect()
+
+
+# ── Helpers ────────────────────────────────────────────────────────────────────
+
+def _fmt(v, fmt_str, fallback="—"):
+    try:
+        return fmt_str.format(v) if v is not None else fallback
+    except Exception:
+        return fallback
 
 
 # ── Main render ────────────────────────────────────────────────────────────────
@@ -77,88 +150,74 @@ def _barchart_history(api_key: str, symbol: str, period: str = "3m") -> pd.DataF
 def render_stir():
     st.markdown("### STIR — Short Term Interest Rate Futures")
 
-    api_key = ""
-    try:
-        api_key = st.secrets.get("BARCHART_API_KEY", "")
-    except Exception:
-        pass
-
-    if not api_key:
-        st.warning(
-            "**Barchart API key required.**  \n"
-            "Sign up for a free key at **barchart.com/ondemand** then add it to "
-            "Streamlit secrets:  \n```\nBARCHART_API_KEY = \"your-key-here\"\n```"
-        )
+    if not _IB_AVAILABLE:
+        st.error("`ib_insync` is not installed. Run `pip install ib_insync nest_asyncio`.")
         return
+
+    # ── Connection settings ────────────────────────────────────────────────────
+    with st.expander("⚙️  IBKR connection", expanded=False):
+        cc1, cc2 = st.columns(2)
+        with cc1:
+            host = st.text_input("Host", value="127.0.0.1", key="stir_host")
+        with cc2:
+            port = st.number_input(
+                "Port  (IB Gateway: 4001 · TWS: 7496)",
+                value=4001, min_value=1, max_value=65535,
+                step=1, key="stir_port",
+            )
 
     contracts = _active_contracts(8)
-    symbols   = ",".join(c["ticker"] for c in contracts)
 
-    with st.spinner("Loading Euribor futures…"):
+    # ── Fetch quotes ───────────────────────────────────────────────────────────
+    with st.spinner("Connecting to IBKR…"):
         try:
-            results = _barchart_quotes(api_key, symbols)
+            rows = _fetch_quotes(host, int(port), tuple(contracts))
         except Exception as e:
-            st.error(f"Barchart fetch error: {e}")
+            st.error(
+                f"**Could not connect to IBKR** (`{host}:{port}`).  \n"
+                f"Make sure IB Gateway / TWS is running and API connections are enabled.  \n"
+                f"Error: `{e}`"
+            )
             return
 
-    if not results:
-        st.warning("No quotes returned — check that your API key is valid.")
-        return
-
-    quote_map = {r["symbol"]: r for r in results}
-
-    rows = []
-    for c in contracts:
-        q = quote_map.get(c["ticker"])
-        if not q:
-            continue
-        last = q.get("lastPrice") or q.get("last")
-        prev = q.get("previousClose")
-        vol  = q.get("volume")
-        oi   = q.get("openInterest")
-        if last is None:
-            continue
-        impl   = 100 - last
-        chg_p  = (last - prev) if prev is not None else None
-        chg_b  = chg_p * 100   if chg_p is not None else None
-        rows.append({
-            "Contract":   c["label"],
-            "Ticker":     c["ticker"],
-            "Price":      f"{last:.3f}",
-            "Impl. Rate": f"{impl:.3f}%",
-            "Chg (pts)":  f"{chg_p:+.3f}" if chg_p is not None else "—",
-            "Chg (bps)":  f"{chg_b:+.1f}" if chg_b is not None else "—",
-            "Volume":     f"{int(vol):,}"  if vol else "—",
-            "Open Int":   f"{int(oi):,}"   if oi  else "—",
-            "_impl":      impl,
-            "_chg_b":     chg_b,
-        })
-
     if not rows:
-        st.warning("No valid quotes found.")
+        st.warning("Connected but no quotes returned — check that market data is subscribed for Euribor futures.")
         return
 
     # ── Table ──────────────────────────────────────────────────────────────────
-    st.markdown("#### Euribor 3M Futures (ICE)")
-    st.caption("Price = 100 − Implied Rate · Source: Barchart (15-min delayed)")
+    st.markdown("#### Euribor 3M Futures (ICE / LIFFE)")
+    st.caption("Source: IBKR live feed · Price = 100 − Implied Rate")
 
-    display_cols = ["Price", "Impl. Rate", "Chg (pts)", "Chg (bps)", "Volume", "Open Int"]
-    df_tbl = pd.DataFrame(rows).set_index("Contract")[display_cols]
-
-    # price up = implied rate down (dovish); colour price-change cols green on up
-    # colour Impl. Rate inverse: red if rate rising, green if falling
-    chg_colors  = []
+    table_rows = []
+    chg_colors = []
     rate_colors = []
+
     for r in rows:
-        v = r["_chg_b"]
-        if v is not None:
-            chg_colors.append("color:#059669;font-weight:600" if v > 0 else
-                              ("color:#DC2626;font-weight:600" if v < 0 else ""))
-            rate_colors.append("color:#DC2626;font-weight:600" if v > 0 else
-                               ("color:#059669;font-weight:600" if v < 0 else ""))
+        chg_b = r["chg_b"]
+        if chg_b is not None:
+            # price up → rate down (dovish = green on rate col, green on price chg)
+            chg_colors.append("color:#059669;font-weight:600"  if chg_b > 0 else
+                              ("color:#DC2626;font-weight:600" if chg_b < 0 else ""))
+            rate_colors.append("color:#DC2626;font-weight:600" if chg_b > 0 else
+                               ("color:#059669;font-weight:600" if chg_b < 0 else ""))
         else:
             chg_colors.append("")
             rate_colors.append("")
+
+        bid_ask = (f"{r['bid']:.3f} / {r['ask']:.3f}"
+                   if r["bid"] and r["ask"] else "—")
+
+        table_rows.append({
+            "Contract":   r["label"],
+            "Price":      _fmt(r["price"], "{:.3f}"),
+            "Bid/Ask":    bid_ask,
+            "Impl. Rate": _fmt(r["impl_rate"], "{:.3f}%"),
+            "Chg (pts)":  _fmt(r["chg_p"], "{:+.3f}"),
+            "Chg (bps)":  _fmt(r["chg_b"], "{:+.1f}"),
+            "Volume":     _fmt(r["volume"], "{:,}"),
+        })
+
+    df_tbl = pd.DataFrame(table_rows).set_index("Contract")
 
     styled = (
         df_tbl.style
@@ -169,18 +228,19 @@ def render_stir():
 
     # ── Implied rate curve ─────────────────────────────────────────────────────
     st.markdown("#### Implied ECB Rate Path")
-    labels = [r["Contract"] for r in rows]
-    rates  = [r["_impl"]    for r in rows]
-    chgs   = [r["_chg_b"]   for r in rows]
+
+    labels     = [r["label"]     for r in rows]
+    impl_rates = [r["impl_rate"] for r in rows]
+    chg_bs     = [r["chg_b"]     for r in rows]
 
     dot_colors = [
         "#DC2626" if (c or 0) > 0 else ("#059669" if (c or 0) < 0 else "#94A3B8")
-        for c in chgs
+        for c in chg_bs
     ]
 
     fig = go.Figure()
     fig.add_trace(go.Scatter(
-        x=labels, y=rates,
+        x=labels, y=impl_rates,
         mode="lines+markers",
         line=dict(color="#0EA5E9", width=2),
         marker=dict(size=9, color=dot_colors, line=dict(color="#FFFFFF", width=1.5)),
@@ -196,30 +256,27 @@ def render_stir():
         font=dict(family="Inter, Segoe UI, sans-serif", color="#1A202C"),
     )
     st.plotly_chart(fig, use_container_width=True)
-    st.caption("Dot colour: red = rate priced higher vs prev. close · green = lower")
+    st.caption("Dot colour: red = rate priced higher vs prev close · green = lower")
 
     # ── Contract history ───────────────────────────────────────────────────────
     st.markdown("#### Contract history")
-    hist_labels  = [r["Contract"] for r in rows]
-    hist_tickers = [r["Ticker"]   for r in rows]
 
     hc1, hc2 = st.columns([3, 2])
     with hc1:
-        sel_lbl = st.selectbox("Contract", hist_labels, key="stir_hist_sel")
+        sel_label = st.selectbox("Contract", [r["label"] for r in rows], key="stir_hist_sel")
     with hc2:
         hist_period = st.selectbox(
-            "Period",
-            ["1m", "3m", "6m", "1y"],
-            format_func=lambda x: {"1m": "1M", "3m": "3M", "6m": "6M", "1y": "1Y"}[x],
-            index=1, key="stir_hist_period",
+            "Period", ["1M", "3M", "6M", "1Y"], index=1, key="stir_hist_period",
         )
 
-    sel_tkr = hist_tickers[hist_labels.index(sel_lbl)]
-    with st.spinner(f"Loading {sel_lbl} history…"):
+    sel_expiry   = next(r["expiry"] for r in rows if r["label"] == sel_label)
+    ibkr_dur     = _DURATION_MAP[hist_period]
+
+    with st.spinner(f"Loading {sel_label} history…"):
         try:
-            df_hist = _barchart_history(api_key, sel_tkr, hist_period)
+            df_hist = _fetch_history(host, int(port), sel_expiry, ibkr_dur)
         except Exception as e:
-            st.error(f"History fetch error: {e}")
+            st.error(f"History fetch error: `{e}`")
             df_hist = pd.DataFrame()
 
     if not df_hist.empty:
@@ -239,9 +296,9 @@ def render_stir():
         ))
         fig2.update_layout(
             title=dict(
-                text=f"{sel_lbl} — Implied Rate  "
-                     f"<span style='font-size:12px;color:#64748B'>"
-                     f"current: {last_rate:.3f}%</span>",
+                text=(f"{sel_label} — Implied Rate  "
+                      f"<span style='font-size:12px;color:#64748B'>"
+                      f"current: {last_rate:.3f}%</span>"),
                 font=dict(size=13, color="#1A202C"),
             ),
             height=280,
@@ -254,4 +311,4 @@ def render_stir():
         )
         st.plotly_chart(fig2, use_container_width=True)
     else:
-        st.info("No history available for this contract / period.")
+        st.info("No history data available for this contract / period.")
