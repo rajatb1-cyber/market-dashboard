@@ -3,7 +3,17 @@ import pandas as pd
 import plotly.graph_objects as go
 from datetime import date
 
+import asyncio
+
+# Streamlit runs scripts in a thread with no event loop; ib_insync needs one at import time
 try:
+    asyncio.get_event_loop()
+except RuntimeError:
+    asyncio.set_event_loop(asyncio.new_event_loop())
+
+try:
+    import nest_asyncio
+    nest_asyncio.apply()
     from ib_insync import IB, Future, util
     _IB_AVAILABLE = True
 except Exception:
@@ -45,7 +55,7 @@ def _fetch_quotes(host: str, port: int, contracts: tuple) -> list:
         ib.connect(host, port, clientId=15, timeout=10, readonly=True)
 
         fut_objects = [
-            Future(symbol="I", exchange="LIFFE", currency="EUR",
+            Future(symbol="I", exchange="ICEEU", currency="EUR",
                    lastTradeDateOrContractMonth=expiry)
             for _, expiry in contracts
         ]
@@ -102,7 +112,7 @@ def _fetch_history(host: str, port: int, expiry: str, duration: str) -> pd.DataF
     try:
         ib.connect(host, port, clientId=16, timeout=10, readonly=True)
 
-        contract = Future(symbol="I", exchange="LIFFE", currency="EUR",
+        contract = Future(symbol="I", exchange="ICEEU", currency="EUR",
                           lastTradeDateOrContractMonth=expiry)
         qualified = ib.qualifyContracts(contract)
         if not qualified:
@@ -139,6 +149,8 @@ def _fmt(v, fmt_str, fallback="—"):
         return fallback
 
 
+# ── Contract diagnostics ───────────────────────────────────────────────────────
+
 # ── Main render ────────────────────────────────────────────────────────────────
 
 def render_stir():
@@ -147,16 +159,10 @@ def render_stir():
     if not _IB_AVAILABLE:
         st.info(
             "**This tab requires a local IBKR connection and is not available on Streamlit Cloud.**  \n\n"
-            "To use it, run the app locally with IB Gateway open:  \n"
+            "To use it, run the app locally with TWS open:  \n"
             "```\npip install ib_insync nest_asyncio\nstreamlit run app.py\n```"
         )
         return
-
-    try:
-        import nest_asyncio
-        nest_asyncio.apply()
-    except Exception:
-        pass
 
     # ── Connection settings ────────────────────────────────────────────────────
     with st.expander("⚙️  IBKR connection", expanded=False):
@@ -165,8 +171,8 @@ def render_stir():
             host = st.text_input("Host", value="127.0.0.1", key="stir_host")
         with cc2:
             port = st.number_input(
-                "Port  (IB Gateway: 4001 · TWS: 7496)",
-                value=4001, min_value=1, max_value=65535,
+                "Port  (TWS: 7496 · IB Gateway: 4001)",
+                value=7496, min_value=1, max_value=65535,
                 step=1, key="stir_port",
             )
 
@@ -185,7 +191,7 @@ def render_stir():
             return
 
     if not rows:
-        st.warning("Connected but no quotes returned — check that market data is subscribed for Euribor futures.")
+        st.warning("Connected but no quotes returned — check your Euribor futures market data subscription in TWS.")
         return
 
     # ── Table ──────────────────────────────────────────────────────────────────
