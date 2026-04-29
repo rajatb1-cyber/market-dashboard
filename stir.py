@@ -160,7 +160,7 @@ def _fetch_quotes(host: str, port: int, contracts: tuple) -> tuple:
                 "src":       src,
             })
 
-        for t, _, _ in ticker_triples:
+        for t, _, _, _ in ticker_quads:
             try:
                 ib.cancelMktData(t.contract)
             except Exception:
