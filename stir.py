@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
 from datetime import date
+import time
 
 import asyncio
 
@@ -47,7 +48,7 @@ def _active_contracts(n: int = 9) -> list[tuple]:
     return out
 
 
-@st.cache_data(ttl=60)
+@st.cache_data(ttl=15)
 def _fetch_quotes(host: str, port: int, contracts: tuple) -> list:
     """Fetch live Euribor futures quotes from IBKR. Returns list of dicts."""
     ib = IB()
@@ -65,19 +66,29 @@ def _fetch_quotes(host: str, port: int, contracts: tuple) -> list:
             return []
 
         tickers = [ib.reqMktData(c, "", False, False) for c in qualified]
-        ib.sleep(2)
+        ib.sleep(4)
 
         for ticker, (label, expiry) in zip(tickers, contracts):
-            last  = ticker.last  if ticker.last  and ticker.last  > 0 else None
-            close = ticker.close if ticker.close and ticker.close > 0 else None
+            def _val(v):
+                return v if (v is not None and v > 0 and v == v) else None  # NaN guard
+
+            last  = _val(ticker.last)
+            close = _val(ticker.close)
+            bid   = _val(ticker.bid)
+            ask   = _val(ticker.ask)
             vol   = ticker.volume
 
-            price = last or close
+            mid   = (bid + ask) / 2 if (bid and ask) else None
+            # prefer last trade → bid/ask mid → prev close
+            price = last or mid or close
             if price is None:
                 continue
 
-            chg_p = (last - close) if (last and close) else None
-            chg_b = chg_p * 100    if chg_p is not None else None
+            ref   = close  # change always vs prev close
+            chg_p = (price - ref) if (ref and price != ref) else None
+            chg_b = chg_p * 100   if chg_p is not None else None
+
+            src = "last" if last else ("mid" if mid else "close")
 
             rows.append({
                 "label":     label,
@@ -87,6 +98,7 @@ def _fetch_quotes(host: str, port: int, contracts: tuple) -> list:
                 "chg_p":     chg_p,
                 "chg_b":     chg_b,
                 "volume":    int(vol) if vol and vol > 0 else None,
+                "src":       src,
             })
 
         for t in tickers:
@@ -173,9 +185,17 @@ def render_stir():
                 step=1, key="stir_port",
             )
 
-    contracts = _active_contracts(8)
+    contracts = _active_contracts(12)  # Mar 26 → Dec 28
+
+    # ── Refresh controls ───────────────────────────────────────────────────────
+    rc1, rc2 = st.columns([1, 5])
+    with rc1:
+        if st.button("⟳ Refresh", key="stir_refresh_btn"):
+            _fetch_quotes.clear()
+            st.rerun()
 
     # ── Fetch quotes ───────────────────────────────────────────────────────────
+    fetch_time = time.time()
     with st.spinner("Connecting to IBKR…"):
         try:
             rows = _fetch_quotes(host, int(port), tuple(contracts))
@@ -193,7 +213,14 @@ def render_stir():
 
     # ── Table ──────────────────────────────────────────────────────────────────
     st.markdown("#### Euribor 3M Futures (ICE / LIFFE)")
-    st.caption("Source: IBKR live feed · Price = 100 − Implied Rate")
+
+    # Show data source breakdown
+    src_counts = {}
+    for r in rows:
+        src_counts[r.get("src", "?")] = src_counts.get(r.get("src", "?"), 0) + 1
+    src_str = " · ".join(f"{v}× {k}" for k, v in src_counts.items())
+    updated = time.strftime("%H:%M:%S", time.localtime(fetch_time))
+    st.caption(f"Source: IBKR · Price = 100 − Implied Rate · Updated {updated} · {src_str}")
 
     table_rows = []
     chg_colors = []
