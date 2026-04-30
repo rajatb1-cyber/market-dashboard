@@ -253,34 +253,38 @@ def _scan_symbol(host: str, port: int, symbol: str, exchange: str) -> list:
     try:
         ib.connect(host, port, clientId=17, timeout=10, readonly=True)
 
-        # Try multiple symbol variants × exchange variants (no expiry = list all)
-        sym_variants = [symbol, symbol.replace(".", ""), symbol.split(".")[0]]
-        # Include no-exchange search so IBKR picks the right venue
-        exch_variants = [exchange, ""]
-        seen = set()
-        for sym in sym_variants:
-            for exch in exch_variants:
-                key = (sym, exch)
-                if key in seen:
-                    continue
-                seen.add(key)
-                try:
-                    fut = Future(symbol=sym, exchange=exch) if exch else Future(symbol=sym)
-                    details = ib.reqContractDetails(fut)
-                    for d in details[:3]:
-                        c = d.contract
-                        results.append({
-                            "tried":        f"{sym}@{exch or 'any'}",
-                            "conId":        c.conId,
-                            "symbol":       c.symbol,
-                            "localSymbol":  c.localSymbol,
-                            "tradingClass": c.tradingClass,
-                            "exchange":     c.exchange,
-                            "currency":     c.currency,
-                            "expiry":       c.lastTradeDateOrContractMonth,
-                        })
-                except Exception as e:
-                    results.append({"tried": f"{sym}@{exch or 'any'}", "error": str(e)})
+        from ib_insync import Contract
+
+        def _probe(label, contract_kwargs):
+            try:
+                details = ib.reqContractDetails(Contract(**contract_kwargs))
+                for d in details[:3]:
+                    c = d.contract
+                    results.append({
+                        "tried":        label,
+                        "conId":        c.conId,
+                        "symbol":       c.symbol,
+                        "localSymbol":  c.localSymbol,
+                        "tradingClass": c.tradingClass,
+                        "exchange":     c.exchange,
+                        "currency":     c.currency,
+                        "expiry":       c.lastTradeDateOrContractMonth,
+                    })
+            except Exception as e:
+                results.append({"tried": label, "error": str(e)})
+
+        # 1. localSymbol lookup — TWS shows "SONIA.N" so try that directly
+        _probe(f"localSymbol={symbol}@{exchange}",
+               dict(secType="FUT", localSymbol=symbol, exchange=exchange))
+        _probe(f"localSymbol={symbol}@any",
+               dict(secType="FUT", localSymbol=symbol))
+
+        # 2. symbol variants × exchange variants
+        for sym in [symbol, symbol.replace(".", ""), symbol.split(".")[0]]:
+            for exch in [exchange, ""]:
+                _probe(f"symbol={sym}@{exch or 'any'}",
+                       dict(secType="FUT", symbol=sym, exchange=exch) if exch
+                       else dict(secType="FUT", symbol=sym))
 
     except Exception as e:
         results.append({"error": str(e)})
