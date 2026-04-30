@@ -245,6 +245,31 @@ def _fetch_history(host: str, port: int, expiry: str, duration: str,
             ib.disconnect()
 
 
+@st.cache_data(ttl=300)
+def _scan_symbol(host: str, port: int, pattern: str) -> list:
+    """Return matching contracts from IBKR for a search pattern."""
+    ib = IB()
+    try:
+        ib.connect(host, port, clientId=17, timeout=10, readonly=True)
+        matches = ib.reqMatchingSymbols(pattern)
+        return [
+            {
+                "symbol":      m.contract.symbol,
+                "secType":     m.contract.secType,
+                "exchange":    m.contract.primaryExch or m.contract.exchange,
+                "currency":    m.contract.currency,
+                "description": getattr(m, "derivativeSecTypes", ""),
+            }
+            for m in (matches or [])
+            if m.contract.secType in ("FUT", "CONTFUT", "")
+        ]
+    except Exception as e:
+        return [{"error": str(e)}]
+    finally:
+        if ib.isConnected():
+            ib.disconnect()
+
+
 def _render_curve(host: str, port: int, curve_name: str, tab_key: str):
     """Render the full table + chart + history for one curve."""
     cfg            = _CURVES[curve_name]
@@ -272,9 +297,15 @@ def _render_curve(host: str, port: int, curve_name: str, tab_key: str):
             return
 
     if not rows:
-        st.warning(f"No quotes returned for {curve_name} — check TWS market data subscription.")
+        st.warning(f"No quotes returned for {curve_name} — could not resolve contracts.")
         with st.expander("Debug — qualification", expanded=True):
             st.dataframe(pd.DataFrame(debug.get("qual", [])), use_container_width=True)
+        with st.expander(f"Symbol scanner — searching IBKR for '{cfg['symbol']}'", expanded=True):
+            scan = _scan_symbol(host, port, cfg["symbol"])
+            if scan:
+                st.dataframe(pd.DataFrame(scan), use_container_width=True)
+            else:
+                st.info("No matching symbols found.")
         return
 
     missing = {lbl for lbl, _ in contracts} - {r["label"] for r in rows}
