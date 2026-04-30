@@ -25,25 +25,28 @@ _DURATION_MAP = {"1M": "1 M", "3M": "3 M", "6M": "6 M", "1Y": "1 Y"}
 # Contract specs for each curve
 _CURVES = {
     "Euribor": {
-        "symbol":    "I",
-        "exchange":  "ICEEU",
-        "currency":  "EUR",
-        "subtitle":  "Euribor 3M Futures (ICE/LIFFE)",
-        "cb_label":  "Implied ECB Rate Path",
+        "symbol":        "I",
+        "exchange":      "ICEEU",
+        "currency":      "EUR",
+        "tradingClass":  "",
+        "subtitle":      "Euribor 3M Futures (ICE/LIFFE)",
+        "cb_label":      "Implied ECB Rate Path",
     },
     "SONIA": {
-        "symbol":    "SONIA",
-        "exchange":  "ICEEU",
-        "currency":  "GBP",
-        "subtitle":  "SONIA Futures (ICE/LIFFE)",
-        "cb_label":  "Implied BoE Rate Path",
+        "symbol":        "SONIA",
+        "exchange":      "ICEEU",
+        "currency":      "GBP",
+        "tradingClass":  "SONIA.N",   # as shown in TWS: SONIA.N Dec'26@ICEEU
+        "subtitle":      "SONIA Futures (ICE/LIFFE)",
+        "cb_label":      "Implied BoE Rate Path",
     },
     "SOFR": {
-        "symbol":    "SR3",
-        "exchange":  "CME",
-        "currency":  "USD",
-        "subtitle":  "SOFR 3M Futures (CME)",
-        "cb_label":  "Implied Fed Rate Path",
+        "symbol":        "SR3",
+        "exchange":      "CME",
+        "currency":      "USD",
+        "tradingClass":  "",
+        "subtitle":      "SOFR 3M Futures (CME)",
+        "cb_label":      "Implied Fed Rate Path",
     },
 }
 
@@ -82,10 +85,13 @@ def _fmt(v, fmt_str, fallback="—"):
         return fallback
 
 
-def _resolve(ib, symbol, exchange, currency, exp6):
+def _resolve(ib, symbol, exchange, currency, exp6, trading_class=""):
     """Return a qualified contract via reqContractDetails (handles ambiguous results)."""
-    fut = Future(symbol=symbol, exchange=exchange, currency=currency,
-                 lastTradeDateOrContractMonth=exp6)
+    kwargs = dict(symbol=symbol, exchange=exchange, currency=currency,
+                  lastTradeDateOrContractMonth=exp6)
+    if trading_class:
+        kwargs["tradingClass"] = trading_class
+    fut = Future(**kwargs)
     try:
         details = ib.reqContractDetails(fut)
     except Exception:
@@ -99,7 +105,8 @@ def _resolve(ib, symbol, exchange, currency, exp6):
 
 @st.cache_data(ttl=15)
 def _fetch_quotes(host: str, port: int, contracts: tuple,
-                  symbol: str, exchange: str, currency: str) -> tuple:
+                  symbol: str, exchange: str, currency: str,
+                  trading_class: str = "") -> tuple:
     """Returns (rows, debug) for one curve."""
     ib = IB()
     rows  = []
@@ -111,7 +118,7 @@ def _fetch_quotes(host: str, port: int, contracts: tuple,
         ticker_quads  = []
 
         for exp6, label in label_by_exp6.items():
-            qc, n_matches = _resolve(ib, symbol, exchange, currency, exp6)
+            qc, n_matches = _resolve(ib, symbol, exchange, currency, exp6, trading_class)
             debug["qual"].append({
                 "exp": exp6, "label": label,
                 "status": "ok" if qc else "no match",
@@ -195,13 +202,14 @@ def _fetch_quotes(host: str, port: int, contracts: tuple,
 
 @st.cache_data(ttl=300)
 def _fetch_history(host: str, port: int, expiry: str, duration: str,
-                   symbol: str, exchange: str, currency: str) -> tuple:
+                   symbol: str, exchange: str, currency: str,
+                   trading_class: str = "") -> tuple:
     """Returns (df, error_str)."""
     ib = IB()
     try:
         ib.connect(host, port, clientId=16, timeout=10, readonly=True)
 
-        resolved, _ = _resolve(ib, symbol, exchange, currency, expiry)
+        resolved, _ = _resolve(ib, symbol, exchange, currency, expiry, trading_class)
         if resolved is None:
             return pd.DataFrame(), f"Could not resolve contract {symbol} {expiry} on {exchange}"
 
@@ -239,11 +247,12 @@ def _fetch_history(host: str, port: int, expiry: str, duration: str,
 
 def _render_curve(host: str, port: int, curve_name: str, tab_key: str):
     """Render the full table + chart + history for one curve."""
-    cfg       = _CURVES[curve_name]
-    symbol    = cfg["symbol"]
-    exchange  = cfg["exchange"]
-    currency  = cfg["currency"]
-    contracts = _active_contracts(12)
+    cfg            = _CURVES[curve_name]
+    symbol         = cfg["symbol"]
+    exchange       = cfg["exchange"]
+    currency       = cfg["currency"]
+    trading_class  = cfg.get("tradingClass", "")
+    contracts      = _active_contracts(12)
 
     if st.button("⟳ Refresh", key=f"stir_refresh_{tab_key}"):
         _fetch_quotes.clear()
@@ -253,7 +262,7 @@ def _render_curve(host: str, port: int, curve_name: str, tab_key: str):
     with st.spinner(f"Connecting to IBKR for {curve_name}…"):
         try:
             rows, debug = _fetch_quotes(
-                host, port, tuple(contracts), symbol, exchange, currency
+                host, port, tuple(contracts), symbol, exchange, currency, trading_class
             )
         except Exception as e:
             st.error(
@@ -362,7 +371,7 @@ def _render_curve(host: str, port: int, curve_name: str, tab_key: str):
     with st.spinner(f"Loading {sel_label} history…"):
         try:
             df_hist, hist_err = _fetch_history(
-                host, port, sel_expiry, ibkr_dur, symbol, exchange, currency
+                host, port, sel_expiry, ibkr_dur, symbol, exchange, currency, trading_class
             )
         except Exception as e:
             st.error(f"History fetch error: `{e}`")
