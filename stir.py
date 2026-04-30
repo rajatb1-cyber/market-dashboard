@@ -6,7 +6,6 @@ import time
 
 import asyncio
 
-# Streamlit runs scripts in a thread with no event loop; ib_insync needs one at import time
 try:
     asyncio.get_event_loop()
 except RuntimeError:
@@ -23,9 +22,34 @@ except Exception:
 _MONTH_NAMES = {3: "Mar", 6: "Jun", 9: "Sep", 12: "Dec"}
 _DURATION_MAP = {"1M": "1 M", "3M": "3 M", "6M": "6 M", "1Y": "1 Y"}
 
+# Contract specs for each curve
+_CURVES = {
+    "Euribor": {
+        "symbol":    "I",
+        "exchange":  "ICEEU",
+        "currency":  "EUR",
+        "subtitle":  "Euribor 3M Futures (ICE/LIFFE)",
+        "cb_label":  "Implied ECB Rate Path",
+    },
+    "SONIA": {
+        "symbol":    "SONIA",
+        "exchange":  "ICEEU",
+        "currency":  "GBP",
+        "subtitle":  "SONIA Futures (ICE/LIFFE)",
+        "cb_label":  "Implied BoE Rate Path",
+    },
+    "SOFR": {
+        "symbol":    "SR3",
+        "exchange":  "CME",
+        "currency":  "USD",
+        "subtitle":  "SOFR 3M Futures (CME)",
+        "cb_label":  "Implied Fed Rate Path",
+    },
+}
+
 
 def _active_contracts(n: int = 12) -> list[tuple]:
-    """Return n quarterly Euribor contracts starting from the most recent past quarter."""
+    """Return n quarterly contracts starting from the most recent past quarter."""
     today = date.today()
     qm, qy = today.month, today.year
     for q in (12, 9, 6, 3):
@@ -34,7 +58,6 @@ def _active_contracts(n: int = 12) -> list[tuple]:
             break
     else:
         qm, qy = 12, qy - 1
-
     out = []
     for _ in range(n):
         out.append((f"{_MONTH_NAMES[qm]} {str(qy)[-2:]}", f"{qy}{qm:02d}"))
@@ -45,65 +68,65 @@ def _active_contracts(n: int = 12) -> list[tuple]:
 
 
 def _v(val):
-    """Return val if it is a valid positive finite float, else None."""
     try:
         f = float(val)
-        return f if (f == f and f > 0) else None  # NaN guard + positive check
+        return f if (f == f and f > 0) else None
     except Exception:
         return None
 
 
+def _fmt(v, fmt_str, fallback="—"):
+    try:
+        return fmt_str.format(v) if v is not None else fallback
+    except Exception:
+        return fallback
+
+
+def _resolve(ib, symbol, exchange, currency, exp6):
+    """Return a qualified contract via reqContractDetails (handles ambiguous results)."""
+    fut = Future(symbol=symbol, exchange=exchange, currency=currency,
+                 lastTradeDateOrContractMonth=exp6)
+    try:
+        details = ib.reqContractDetails(fut)
+    except Exception:
+        return None, 0
+    if not details:
+        return None, 0
+    exact = [d for d in details if d.contract.lastTradeDateOrContractMonth[:6] == exp6]
+    chosen = exact or details
+    return chosen[0].contract, len(details)
+
+
 @st.cache_data(ttl=15)
-def _fetch_quotes(host: str, port: int, contracts: tuple) -> tuple:
-    """Fetch Euribor futures quotes from IBKR.
-    Returns (rows: list[dict], debug: list[dict]).
-    """
+def _fetch_quotes(host: str, port: int, contracts: tuple,
+                  symbol: str, exchange: str, currency: str) -> tuple:
+    """Returns (rows, debug) for one curve."""
     ib = IB()
-    rows   = []
-    debug  = {"qual": [], "ticks": []}
+    rows  = []
+    debug = {"qual": [], "ticks": []}
     try:
         ib.connect(host, port, clientId=15, timeout=10, readonly=True)
 
-        label_by_exp6 = {exp: lbl for lbl, exp in contracts}   # "202612" → "Dec 26"
+        label_by_exp6 = {exp: lbl for lbl, exp in contracts}
+        ticker_quads  = []
 
-        # ── Resolve contracts via reqContractDetails ───────────────────────────
-        # qualifyContracts silently drops any contract with >1 match ("ambiguous").
-        # reqContractDetails returns ALL matches — we take the first that fits our
-        # expiry prefix, so nothing ever gets silently dropped.
-        ticker_quads = []  # (ticker, qc, label, exp6)
-        qual_debug   = []  # for the debug expander
         for exp6, label in label_by_exp6.items():
-            fut = Future(symbol="I", exchange="ICEEU", currency="EUR",
-                         lastTradeDateOrContractMonth=exp6)
-            try:
-                details = ib.reqContractDetails(fut)
-            except Exception as e:
-                qual_debug.append({"exp": exp6, "label": label, "status": f"error: {e}", "matches": 0})
-                continue
-
-            # Prefer exact YYYYMM prefix match; fall back to first result
-            exact = [d for d in details
-                     if d.contract.lastTradeDateOrContractMonth[:6] == exp6]
-            chosen = (exact or details)
-            qual_debug.append({"exp": exp6, "label": label, "status": "ok" if chosen else "no match", "matches": len(details)})
-
-            if chosen:
-                qc = chosen[0].contract
-                t  = ib.reqMktData(qc, "", False, False)
+            qc, n_matches = _resolve(ib, symbol, exchange, currency, exp6)
+            debug["qual"].append({
+                "exp": exp6, "label": label,
+                "status": "ok" if qc else "no match",
+                "matches": n_matches,
+            })
+            if qc:
+                t = ib.reqMktData(qc, "", False, False)
                 ticker_quads.append((t, qc, label, exp6))
-
-        debug["qual"] = qual_debug
 
         if not ticker_quads:
             return [], debug
 
-        # ── Wait for frozen/live data ──────────────────────────────────────────
-        # Type 2 = frozen: returns last available snapshot even when market is
-        # closed.  IBKR upgrades to live (1) automatically when market is open.
         ib.reqMarketDataType(2)
         ib.sleep(5)
 
-        # ── Extract prices (with historical fallback for missing contracts) ────
         for ticker, qc, label, expiry in ticker_quads:
             last  = _v(ticker.last)
             close = _v(ticker.close)
@@ -115,7 +138,6 @@ def _fetch_quotes(host: str, port: int, contracts: tuple) -> tuple:
             mid        = (bid + ask) / 2 if (bid and ask) else None
             live_price = last or mid
 
-            # ── Historical fallback for contracts with no frozen last trade ────
             hist_price = None
             if not live_price:
                 try:
@@ -135,16 +157,10 @@ def _fetch_quotes(host: str, port: int, contracts: tuple) -> tuple:
             src = "last" if last else ("mid" if mid else ("hist" if hist_price else "close"))
 
             debug["ticks"].append({
-                "Contract":    label,
-                "last":        last,
-                "bid":         bid,
-                "ask":         ask,
-                "close":       close,
-                "hist":        hist_price,
-                "mktDataType": mdt,
+                "Contract": label, "last": last, "bid": bid,
+                "ask": ask, "close": close, "hist": hist_price, "mktDataType": mdt,
             })
 
-            # For curve display, fall back to close if no live price
             display_price = live_price or close
             if display_price is None:
                 continue
@@ -155,7 +171,7 @@ def _fetch_quotes(host: str, port: int, contracts: tuple) -> tuple:
             rows.append({
                 "label":     label,
                 "expiry":    expiry,
-                "price":     live_price,       # None when market closed
+                "price":     live_price,
                 "close":     close,
                 "impl_rate": 100 - display_price,
                 "chg_p":     chg_p,
@@ -178,33 +194,24 @@ def _fetch_quotes(host: str, port: int, contracts: tuple) -> tuple:
 
 
 @st.cache_data(ttl=300)
-def _fetch_history(host: str, port: int, expiry: str, duration: str) -> tuple:
-    """Returns (df, error_str).  df is empty when error_str is set."""
+def _fetch_history(host: str, port: int, expiry: str, duration: str,
+                   symbol: str, exchange: str, currency: str) -> tuple:
+    """Returns (df, error_str)."""
     ib = IB()
     try:
         ib.connect(host, port, clientId=16, timeout=10, readonly=True)
 
-        contract = Future(symbol="I", exchange="ICEEU", currency="EUR",
-                          lastTradeDateOrContractMonth=expiry)
-        details = ib.reqContractDetails(contract)
-        if not details:
-            return pd.DataFrame(), f"reqContractDetails returned nothing for expiry={expiry}"
+        resolved, _ = _resolve(ib, symbol, exchange, currency, expiry)
+        if resolved is None:
+            return pd.DataFrame(), f"Could not resolve contract {symbol} {expiry} on {exchange}"
 
-        exact    = [d for d in details if d.contract.lastTradeDateOrContractMonth[:6] == expiry]
-        resolved = (exact or details)[0].contract
-
-        # Try MIDPOINT first (continuous bid/ask quotes exist even on quiet days),
-        # fall back to LAST (trade prices only, may be sparse for far-dated contracts).
         bars = None
         for show in ("MIDPOINT", "LAST"):
             try:
                 bars = ib.reqHistoricalData(
-                    resolved,
-                    endDateTime="",
-                    durationStr=duration,
-                    barSizeSetting="1 day",
-                    whatToShow=show,
-                    useRTH=False,
+                    resolved, endDateTime="",
+                    durationStr=duration, barSizeSetting="1 day",
+                    whatToShow=show, useRTH=False,
                 )
             except Exception:
                 bars = None
@@ -213,7 +220,7 @@ def _fetch_history(host: str, port: int, expiry: str, duration: str) -> tuple:
 
         if not bars:
             return pd.DataFrame(), (
-                f"reqHistoricalData returned no bars for conId={resolved.conId} "
+                f"No bars returned for conId={resolved.conId} "
                 f"expiry={resolved.lastTradeDateOrContractMonth} dur={duration}"
             )
 
@@ -230,77 +237,49 @@ def _fetch_history(host: str, port: int, expiry: str, duration: str) -> tuple:
             ib.disconnect()
 
 
-def _fmt(v, fmt_str, fallback="—"):
-    try:
-        return fmt_str.format(v) if v is not None else fallback
-    except Exception:
-        return fallback
-
-
-def render_stir():
-    st.markdown("### STIR — Short Term Interest Rate Futures")
-
-    if not _IB_AVAILABLE:
-        st.info(
-            "**This tab requires a local IBKR connection and is not available on Streamlit Cloud.**  \n\n"
-            "To use it, run the app locally with TWS open:  \n"
-            "```\npip install ib_insync nest_asyncio\nstreamlit run app.py\n```"
-        )
-        return
-
-    # ── Connection settings ────────────────────────────────────────────────────
-    with st.expander("⚙️  IBKR connection", expanded=False):
-        cc1, cc2 = st.columns(2)
-        with cc1:
-            host = st.text_input("Host", value="127.0.0.1", key="stir_host")
-        with cc2:
-            port = st.number_input(
-                "Port  (TWS: 7496 · IB Gateway: 4001)",
-                value=7496, min_value=1, max_value=65535,
-                step=1, key="stir_port",
-            )
-
+def _render_curve(host: str, port: int, curve_name: str, tab_key: str):
+    """Render the full table + chart + history for one curve."""
+    cfg       = _CURVES[curve_name]
+    symbol    = cfg["symbol"]
+    exchange  = cfg["exchange"]
+    currency  = cfg["currency"]
     contracts = _active_contracts(12)
 
-    # ── Refresh button ─────────────────────────────────────────────────────────
-    if st.button("⟳ Refresh", key="stir_refresh_btn"):
+    if st.button("⟳ Refresh", key=f"stir_refresh_{tab_key}"):
         _fetch_quotes.clear()
         st.rerun()
 
-    # ── Fetch quotes ───────────────────────────────────────────────────────────
     fetch_ts = time.time()
-    with st.spinner("Connecting to IBKR…"):
+    with st.spinner(f"Connecting to IBKR for {curve_name}…"):
         try:
-            rows, debug = _fetch_quotes(host, int(port), tuple(contracts))
+            rows, debug = _fetch_quotes(
+                host, port, tuple(contracts), symbol, exchange, currency
+            )
         except Exception as e:
             st.error(
                 f"**Could not connect to IBKR** (`{host}:{port}`).  \n"
-                f"Make sure IB Gateway / TWS is running and API connections are enabled.  \n"
                 f"Error: `{e}`"
             )
             return
 
     if not rows:
-        st.warning("Connected but no quotes returned — check your Euribor futures market data subscription in TWS.")
+        st.warning(f"No quotes returned for {curve_name} — check TWS market data subscription.")
+        with st.expander("Debug — qualification", expanded=True):
+            st.dataframe(pd.DataFrame(debug.get("qual", [])), use_container_width=True)
         return
 
-    # Warn about any contracts that never made it into the result
-    returned_labels = {r["label"] for r in rows}
-    all_labels      = {lbl for lbl, _ in contracts}
-    missing_labels  = all_labels - returned_labels
-    if missing_labels:
-        st.warning(f"Could not fetch data for: {', '.join(sorted(missing_labels))} — IBKR did not qualify these contracts.")
+    missing = {lbl for lbl, _ in contracts} - {r["label"] for r in rows}
+    if missing:
+        st.warning(f"Missing contracts: {', '.join(sorted(missing))}")
 
-    # ── Debug expander ─────────────────────────────────────────────────────────
-    with st.expander("Debug — raw IBKR tick values", expanded=False):
+    with st.expander("Debug — raw IBKR values", expanded=False):
         st.caption("Qualification")
         st.dataframe(pd.DataFrame(debug.get("qual", [])), use_container_width=True)
-        st.caption("Tick data  (mktDataType: 1=live, 2=frozen, 3=delayed)")
+        st.caption("Tick data  (mktDataType: 1=live, 2=frozen)")
         st.dataframe(pd.DataFrame(debug.get("ticks", [])), use_container_width=True)
 
-    # ── Table ──────────────────────────────────────────────────────────────────
-    st.markdown("#### Euribor 3M Futures (ICE / LIFFE)")
-
+    # ── Quotes table ───────────────────────────────────────────────────────────
+    st.markdown(f"#### {cfg['subtitle']}")
     src_counts: dict = {}
     for r in rows:
         src_counts[r["src"]] = src_counts.get(r["src"], 0) + 1
@@ -309,7 +288,6 @@ def render_stir():
     st.caption(f"IBKR · Price = 100 − Rate · Updated {updated} · {src_str}")
 
     table_rows, chg_colors, rate_colors = [], [], []
-
     for r in rows:
         chg_b = r["chg_b"]
         if chg_b is not None:
@@ -322,7 +300,7 @@ def render_stir():
             rate_colors.append("")
 
         price_str = (_fmt(r["price"], "{:.3f}") if r["price"] is not None
-                     else _fmt(r["close"], "{:.3f}*"))  # * = prev close, no live data
+                     else _fmt(r["close"], "{:.3f}*"))
 
         table_rows.append({
             "Contract":   r["label"],
@@ -341,29 +319,24 @@ def render_stir():
     )
     st.dataframe(styled, use_container_width=True)
 
-    # ── Implied rate curve ─────────────────────────────────────────────────────
-    st.markdown("#### Implied ECB Rate Path")
-
-    labels     = [r["label"]     for r in rows]
-    impl_rates = [r["impl_rate"] for r in rows]
-    chg_bs     = [r["chg_b"]     for r in rows]
-
+    # ── Rate curve ─────────────────────────────────────────────────────────────
+    st.markdown(f"#### {cfg['cb_label']}")
     dot_colors = [
-        "#DC2626" if (c or 0) > 0 else ("#059669" if (c or 0) < 0 else "#94A3B8")
-        for c in chg_bs
+        "#DC2626" if (r["chg_b"] or 0) > 0 else
+        ("#059669" if (r["chg_b"] or 0) < 0 else "#94A3B8")
+        for r in rows
     ]
-
     fig = go.Figure()
     fig.add_trace(go.Scatter(
-        x=labels, y=impl_rates,
+        x=[r["label"] for r in rows],
+        y=[r["impl_rate"] for r in rows],
         mode="lines+markers",
         line=dict(color="#0EA5E9", width=2),
         marker=dict(size=9, color=dot_colors, line=dict(color="#FFFFFF", width=1.5)),
         hovertemplate="<b>%{x}</b><br>Implied: %{y:.3f}%<extra></extra>",
     ))
     fig.update_layout(
-        height=300,
-        margin=dict(l=10, r=10, t=20, b=10),
+        height=300, margin=dict(l=10, r=10, t=20, b=10),
         paper_bgcolor="#FFFFFF", plot_bgcolor="#F8FAFC",
         yaxis=dict(ticksuffix="%", gridcolor="#E8EDF5", zeroline=False),
         xaxis=dict(gridcolor="#E8EDF5", zeroline=False),
@@ -371,23 +344,26 @@ def render_stir():
         font=dict(family="Inter, Segoe UI, sans-serif", color="#1A202C"),
     )
     st.plotly_chart(fig, use_container_width=True)
-    st.caption("Dot colour: red = rate priced higher vs prev close · green = lower")
+    st.caption("Dot: red = rate priced higher vs prev close · green = lower")
 
     # ── Contract history ───────────────────────────────────────────────────────
     st.markdown("#### Contract history")
-
     hc1, hc2 = st.columns([3, 2])
     with hc1:
-        sel_label = st.selectbox("Contract", [r["label"] for r in rows], key="stir_hist_sel")
+        sel_label = st.selectbox("Contract", [r["label"] for r in rows],
+                                 key=f"stir_hist_sel_{tab_key}")
     with hc2:
-        hist_period = st.selectbox("Period", ["1M", "3M", "6M", "1Y"], index=1, key="stir_hist_period")
+        hist_period = st.selectbox("Period", ["1M", "3M", "6M", "1Y"], index=1,
+                                   key=f"stir_hist_period_{tab_key}")
 
     sel_expiry = next(r["expiry"] for r in rows if r["label"] == sel_label)
     ibkr_dur   = _DURATION_MAP[hist_period]
 
     with st.spinner(f"Loading {sel_label} history…"):
         try:
-            df_hist, hist_err = _fetch_history(host, int(port), sel_expiry, ibkr_dur)
+            df_hist, hist_err = _fetch_history(
+                host, port, sel_expiry, ibkr_dur, symbol, exchange, currency
+            )
         except Exception as e:
             st.error(f"History fetch error: `{e}`")
             df_hist, hist_err = pd.DataFrame(), ""
@@ -401,7 +377,6 @@ def render_stir():
         line_color = "#DC2626" if last_rate > first_rate else "#059669"
         fill_color = ("rgba(220,38,38,0.07)" if line_color == "#DC2626"
                       else "rgba(5,150,105,0.07)")
-
         fig2 = go.Figure()
         fig2.add_trace(go.Scatter(
             x=df_hist.index, y=df_hist["implied_rate"],
@@ -417,8 +392,7 @@ def render_stir():
                       f"current: {last_rate:.3f}%</span>"),
                 font=dict(size=13, color="#1A202C"),
             ),
-            height=280,
-            margin=dict(l=10, r=10, t=45, b=10),
+            height=280, margin=dict(l=10, r=10, t=45, b=10),
             paper_bgcolor="#FFFFFF", plot_bgcolor="#F8FAFC",
             yaxis=dict(ticksuffix="%", gridcolor="#E8EDF5", zeroline=False),
             xaxis=dict(gridcolor="#E8EDF5", zeroline=False),
@@ -426,5 +400,39 @@ def render_stir():
             font=dict(family="Inter, Segoe UI, sans-serif", color="#1A202C"),
         )
         st.plotly_chart(fig2, use_container_width=True)
-    else:
+    elif not hist_err:
         st.info("No history data available for this contract / period.")
+
+
+def render_stir():
+    st.markdown("### STIR — Short Term Interest Rate Futures")
+
+    if not _IB_AVAILABLE:
+        st.info(
+            "**This tab requires a local IBKR connection and is not available on Streamlit Cloud.**  \n\n"
+            "To use it, run the app locally with TWS open:  \n"
+            "```\npip install ib_insync nest_asyncio\nstreamlit run app.py\n```"
+        )
+        return
+
+    with st.expander("⚙️  IBKR connection", expanded=False):
+        cc1, cc2 = st.columns(2)
+        with cc1:
+            host = st.text_input("Host", value="127.0.0.1", key="stir_host")
+        with cc2:
+            port = st.number_input(
+                "Port  (TWS: 7496 · IB Gateway: 4001)",
+                value=7496, min_value=1, max_value=65535,
+                step=1, key="stir_port",
+            )
+
+    tab_eur, tab_son, tab_sofr = st.tabs(["Euribor", "SONIA", "SOFR"])
+
+    with tab_eur:
+        _render_curve(host, int(port), "Euribor", "eur")
+
+    with tab_son:
+        _render_curve(host, int(port), "SONIA", "son")
+
+    with tab_sofr:
+        _render_curve(host, int(port), "SOFR", "sofr")
