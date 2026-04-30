@@ -246,28 +246,45 @@ def _fetch_history(host: str, port: int, expiry: str, duration: str,
 
 
 @st.cache_data(ttl=300)
-def _scan_symbol(host: str, port: int, pattern: str) -> list:
-    """Return matching contracts from IBKR for a search pattern."""
+def _scan_symbol(host: str, port: int, symbol: str, exchange: str) -> list:
+    """Probe IBKR with reqContractDetails using minimal constraints to find the right spec."""
     ib = IB()
+    results = []
     try:
         ib.connect(host, port, clientId=17, timeout=10, readonly=True)
-        matches = ib.reqMatchingSymbols(pattern)
-        return [
-            {
-                "symbol":      m.contract.symbol,
-                "secType":     m.contract.secType,
-                "exchange":    m.contract.primaryExch or m.contract.exchange,
-                "currency":    m.contract.currency,
-                "description": getattr(m, "derivativeSecTypes", ""),
-            }
-            for m in (matches or [])
-            if m.contract.secType in ("FUT", "CONTFUT", "")
-        ]
+
+        # Try a range of symbol variants — no expiry so we get whatever is listed
+        candidates = [symbol, symbol.replace(".", ""), symbol.split(".")[0]]
+        seen = set()
+        for sym in candidates:
+            if sym in seen:
+                continue
+            seen.add(sym)
+            try:
+                fut = Future(symbol=sym, exchange=exchange)
+                details = ib.reqContractDetails(fut)
+                for d in details[:5]:   # cap at 5 per variant
+                    c = d.contract
+                    results.append({
+                        "tried_symbol": sym,
+                        "conId":        c.conId,
+                        "symbol":       c.symbol,
+                        "localSymbol":  c.localSymbol,
+                        "tradingClass": c.tradingClass,
+                        "exchange":     c.exchange,
+                        "currency":     c.currency,
+                        "expiry":       c.lastTradeDateOrContractMonth,
+                    })
+            except Exception as e:
+                results.append({"tried_symbol": sym, "error": str(e)})
+
     except Exception as e:
-        return [{"error": str(e)}]
+        results.append({"error": str(e)})
     finally:
         if ib.isConnected():
             ib.disconnect()
+
+    return results
 
 
 def _render_curve(host: str, port: int, curve_name: str, tab_key: str):
@@ -300,12 +317,12 @@ def _render_curve(host: str, port: int, curve_name: str, tab_key: str):
         st.warning(f"No quotes returned for {curve_name} — could not resolve contracts.")
         with st.expander("Debug — qualification", expanded=True):
             st.dataframe(pd.DataFrame(debug.get("qual", [])), use_container_width=True)
-        with st.expander(f"Symbol scanner — searching IBKR for '{cfg['symbol']}'", expanded=True):
-            scan = _scan_symbol(host, port, cfg["symbol"])
+        with st.expander(f"Symbol scanner — probing '{cfg['symbol']}' on {cfg['exchange']}", expanded=True):
+            scan = _scan_symbol(host, port, cfg["symbol"], cfg["exchange"])
             if scan:
                 st.dataframe(pd.DataFrame(scan), use_container_width=True)
             else:
-                st.info("No matching symbols found.")
+                st.info("No results — check exchange name or symbol.")
         return
 
     missing = {lbl for lbl, _ in contracts} - {r["label"] for r in rows}
