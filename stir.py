@@ -178,7 +178,8 @@ def _fetch_quotes(host: str, port: int, contracts: tuple) -> tuple:
 
 
 @st.cache_data(ttl=300)
-def _fetch_history(host: str, port: int, expiry: str, duration: str) -> pd.DataFrame:
+def _fetch_history(host: str, port: int, expiry: str, duration: str) -> tuple:
+    """Returns (df, error_str).  df is empty when error_str is set."""
     ib = IB()
     try:
         ib.connect(host, port, clientId=16, timeout=10, readonly=True)
@@ -187,8 +188,9 @@ def _fetch_history(host: str, port: int, expiry: str, duration: str) -> pd.DataF
                           lastTradeDateOrContractMonth=expiry)
         details = ib.reqContractDetails(contract)
         if not details:
-            return pd.DataFrame()
-        exact = [d for d in details if d.contract.lastTradeDateOrContractMonth[:6] == expiry]
+            return pd.DataFrame(), f"reqContractDetails returned nothing for expiry={expiry}"
+
+        exact    = [d for d in details if d.contract.lastTradeDateOrContractMonth[:6] == expiry]
         resolved = (exact or details)[0].contract
 
         bars = ib.reqHistoricalData(
@@ -197,17 +199,22 @@ def _fetch_history(host: str, port: int, expiry: str, duration: str) -> pd.DataF
             durationStr=duration,
             barSizeSetting="1 day",
             whatToShow="LAST",
-            useRTH=True,
+            useRTH=False,
         )
         if not bars:
-            return pd.DataFrame()
+            return pd.DataFrame(), (
+                f"reqHistoricalData returned no bars for conId={resolved.conId} "
+                f"expiry={resolved.lastTradeDateOrContractMonth} dur={duration}"
+            )
 
         df = util.df(bars)[["date", "close"]].copy()
         df["date"] = pd.to_datetime(df["date"]).dt.normalize()
         df = df.set_index("date").sort_index()
         df["implied_rate"] = 100 - df["close"]
-        return df.dropna()
+        return df.dropna(), ""
 
+    except Exception as e:
+        return pd.DataFrame(), str(e)
     finally:
         if ib.isConnected():
             ib.disconnect()
@@ -370,10 +377,13 @@ def render_stir():
 
     with st.spinner(f"Loading {sel_label} history…"):
         try:
-            df_hist = _fetch_history(host, int(port), sel_expiry, ibkr_dur)
+            df_hist, hist_err = _fetch_history(host, int(port), sel_expiry, ibkr_dur)
         except Exception as e:
             st.error(f"History fetch error: `{e}`")
-            df_hist = pd.DataFrame()
+            df_hist, hist_err = pd.DataFrame(), ""
+
+    if hist_err:
+        st.error(f"History error: {hist_err}")
 
     if not df_hist.empty:
         first_rate = float(df_hist["implied_rate"].iloc[0])
