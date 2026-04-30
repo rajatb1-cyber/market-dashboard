@@ -193,14 +193,24 @@ def _fetch_history(host: str, port: int, expiry: str, duration: str) -> tuple:
         exact    = [d for d in details if d.contract.lastTradeDateOrContractMonth[:6] == expiry]
         resolved = (exact or details)[0].contract
 
-        bars = ib.reqHistoricalData(
-            resolved,
-            endDateTime="",
-            durationStr=duration,
-            barSizeSetting="1 day",
-            whatToShow="LAST",
-            useRTH=False,
-        )
+        # Try MIDPOINT first (continuous bid/ask quotes exist even on quiet days),
+        # fall back to LAST (trade prices only, may be sparse for far-dated contracts).
+        bars = None
+        for show in ("MIDPOINT", "LAST"):
+            try:
+                bars = ib.reqHistoricalData(
+                    resolved,
+                    endDateTime="",
+                    durationStr=duration,
+                    barSizeSetting="1 day",
+                    whatToShow=show,
+                    useRTH=False,
+                )
+            except Exception:
+                bars = None
+            if bars:
+                break
+
         if not bars:
             return pd.DataFrame(), (
                 f"reqHistoricalData returned no bars for conId={resolved.conId} "
