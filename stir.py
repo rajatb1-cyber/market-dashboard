@@ -59,56 +59,43 @@ def _fetch_quotes(host: str, port: int, contracts: tuple) -> tuple:
     Returns (rows: list[dict], debug: list[dict]).
     """
     ib = IB()
-    rows, debug = [], []
+    rows   = []
+    debug  = {"qual": [], "ticks": []}
     try:
         ib.connect(host, port, clientId=15, timeout=10, readonly=True)
 
         label_by_exp6 = {exp: lbl for lbl, exp in contracts}   # "202612" → "Dec 26"
-        expected_exp6 = set(label_by_exp6.keys())
 
-        # ── Batch qualify (fast path) ──────────────────────────────────────────
-        fut_objects = [
-            Future(symbol="I", exchange="ICEEU", currency="EUR",
-                   lastTradeDateOrContractMonth=expiry)
-            for _, expiry in contracts
-        ]
-        try:
-            qualified_list = list(ib.qualifyContracts(*fut_objects))
-        except Exception:
-            qualified_list = []
-
-        # ── Retry any contracts the batch silently dropped ─────────────────────
-        got_exp6 = {qc.lastTradeDateOrContractMonth[:6] for qc in qualified_list}
-        missing  = expected_exp6 - got_exp6
-        for exp in sorted(missing):
-            try:
-                fut = Future(symbol="I", exchange="ICEEU", currency="EUR",
-                             lastTradeDateOrContractMonth=exp)
-                q = ib.qualifyContracts(fut)
-                if q:
-                    qualified_list.extend(q)
-            except Exception:
-                pass
-
-        if not qualified_list:
-            return [], []
-
-        # Match each qualified contract back to its label via YYYYMM prefix
-        # Keep qc alongside ticker so we can fall back to historical data later
+        # ── Resolve contracts via reqContractDetails ───────────────────────────
+        # qualifyContracts silently drops any contract with >1 match ("ambiguous").
+        # reqContractDetails returns ALL matches — we take the first that fits our
+        # expiry prefix, so nothing ever gets silently dropped.
         ticker_quads = []  # (ticker, qc, label, exp6)
-        seen = set()
-        for qc in qualified_list:
-            exp6 = qc.lastTradeDateOrContractMonth[:6]
-            if exp6 in seen:
-                continue  # skip duplicates
-            seen.add(exp6)
-            label = label_by_exp6.get(exp6)
-            if label:
-                t = ib.reqMktData(qc, "", False, False)
+        qual_debug   = []  # for the debug expander
+        for exp6, label in label_by_exp6.items():
+            fut = Future(symbol="I", exchange="ICEEU", currency="EUR",
+                         lastTradeDateOrContractMonth=exp6)
+            try:
+                details = ib.reqContractDetails(fut)
+            except Exception as e:
+                qual_debug.append({"exp": exp6, "label": label, "status": f"error: {e}", "matches": 0})
+                continue
+
+            # Prefer exact YYYYMM prefix match; fall back to first result
+            exact = [d for d in details
+                     if d.contract.lastTradeDateOrContractMonth[:6] == exp6]
+            chosen = (exact or details)
+            qual_debug.append({"exp": exp6, "label": label, "status": "ok" if chosen else "no match", "matches": len(details)})
+
+            if chosen:
+                qc = chosen[0].contract
+                t  = ib.reqMktData(qc, "", False, False)
                 ticker_quads.append((t, qc, label, exp6))
 
+        debug["qual"] = qual_debug
+
         if not ticker_quads:
-            return [], []
+            return [], debug
 
         # ── Wait for frozen/live data ──────────────────────────────────────────
         # Type 2 = frozen: returns last available snapshot even when market is
@@ -147,7 +134,7 @@ def _fetch_quotes(host: str, port: int, contracts: tuple) -> tuple:
             live_price = live_price or hist_price
             src = "last" if last else ("mid" if mid else ("hist" if hist_price else "close"))
 
-            debug.append({
+            debug["ticks"].append({
                 "Contract":    label,
                 "last":        last,
                 "bid":         bid,
@@ -287,8 +274,10 @@ def render_stir():
 
     # ── Debug expander ─────────────────────────────────────────────────────────
     with st.expander("Debug — raw IBKR tick values", expanded=False):
-        st.caption("mktDataType: 1=live, 2=frozen, 3=delayed, 4=delayed-frozen")
-        st.dataframe(pd.DataFrame(debug), use_container_width=True)
+        st.caption("Qualification")
+        st.dataframe(pd.DataFrame(debug.get("qual", [])), use_container_width=True)
+        st.caption("Tick data  (mktDataType: 1=live, 2=frozen, 3=delayed)")
+        st.dataframe(pd.DataFrame(debug.get("ticks", [])), use_container_width=True)
 
     # ── Table ──────────────────────────────────────────────────────────────────
     st.markdown("#### Euribor 3M Futures (ICE / LIFFE)")
