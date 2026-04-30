@@ -253,30 +253,34 @@ def _scan_symbol(host: str, port: int, symbol: str, exchange: str) -> list:
     try:
         ib.connect(host, port, clientId=17, timeout=10, readonly=True)
 
-        # Try a range of symbol variants — no expiry so we get whatever is listed
-        candidates = [symbol, symbol.replace(".", ""), symbol.split(".")[0]]
+        # Try multiple symbol variants × exchange variants (no expiry = list all)
+        sym_variants = [symbol, symbol.replace(".", ""), symbol.split(".")[0]]
+        # Include no-exchange search so IBKR picks the right venue
+        exch_variants = [exchange, ""]
         seen = set()
-        for sym in candidates:
-            if sym in seen:
-                continue
-            seen.add(sym)
-            try:
-                fut = Future(symbol=sym, exchange=exchange)
-                details = ib.reqContractDetails(fut)
-                for d in details[:5]:   # cap at 5 per variant
-                    c = d.contract
-                    results.append({
-                        "tried_symbol": sym,
-                        "conId":        c.conId,
-                        "symbol":       c.symbol,
-                        "localSymbol":  c.localSymbol,
-                        "tradingClass": c.tradingClass,
-                        "exchange":     c.exchange,
-                        "currency":     c.currency,
-                        "expiry":       c.lastTradeDateOrContractMonth,
-                    })
-            except Exception as e:
-                results.append({"tried_symbol": sym, "error": str(e)})
+        for sym in sym_variants:
+            for exch in exch_variants:
+                key = (sym, exch)
+                if key in seen:
+                    continue
+                seen.add(key)
+                try:
+                    fut = Future(symbol=sym, exchange=exch) if exch else Future(symbol=sym)
+                    details = ib.reqContractDetails(fut)
+                    for d in details[:3]:
+                        c = d.contract
+                        results.append({
+                            "tried":        f"{sym}@{exch or 'any'}",
+                            "conId":        c.conId,
+                            "symbol":       c.symbol,
+                            "localSymbol":  c.localSymbol,
+                            "tradingClass": c.tradingClass,
+                            "exchange":     c.exchange,
+                            "currency":     c.currency,
+                            "expiry":       c.lastTradeDateOrContractMonth,
+                        })
+                except Exception as e:
+                    results.append({"tried": f"{sym}@{exch or 'any'}", "error": str(e)})
 
     except Exception as e:
         results.append({"error": str(e)})
