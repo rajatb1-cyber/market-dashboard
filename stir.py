@@ -185,12 +185,14 @@ def _fetch_history(host: str, port: int, expiry: str, duration: str) -> pd.DataF
 
         contract = Future(symbol="I", exchange="ICEEU", currency="EUR",
                           lastTradeDateOrContractMonth=expiry)
-        qualified = ib.qualifyContracts(contract)
-        if not qualified:
+        details = ib.reqContractDetails(contract)
+        if not details:
             return pd.DataFrame()
+        exact = [d for d in details if d.contract.lastTradeDateOrContractMonth[:6] == expiry]
+        resolved = (exact or details)[0].contract
 
         bars = ib.reqHistoricalData(
-            qualified[0],
+            resolved,
             endDateTime="",
             durationStr=duration,
             barSizeSetting="1 day",
