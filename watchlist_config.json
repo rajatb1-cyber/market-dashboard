@@ -46,6 +46,26 @@
       "class": "Equity"
     },
     {
+      "name": "KOSPI",
+      "ticker": "^KS11",
+      "class": "Equity"
+    },
+    {
+      "name": "Taiwan",
+      "ticker": "^TWII",
+      "class": "Equity"
+    },
+    {
+      "name": "Hang Seng",
+      "ticker": "^HSI",
+      "class": "Equity"
+    },
+    {
+      "name": "CSI 300",
+      "ticker": "000300.SS",
+      "class": "Equity"
+    },
+    {
       "name": "BBDXY",
       "ticker": "BBDXY_SYNTH",
       "class": "FX"
@@ -58,6 +78,11 @@
     {
       "name": "GBP/USD",
       "ticker": "GBPUSD=X",
+      "class": "FX"
+    },
+    {
+      "name": "EUR/GBP",
+      "ticker": "EURGBP=X",
       "class": "FX"
     },
     {
@@ -101,13 +126,33 @@
       "class": "FX"
     },
     {
+      "name": "US 2Y",
+      "ticker": "^US2YT",
+      "class": "Rates"
+    },
+    {
+      "name": "US 5Y",
+      "ticker": "^FVX",
+      "class": "Rates"
+    },
+    {
       "name": "US 10Y",
       "ticker": "^TNX",
       "class": "Rates"
     },
     {
-      "name": "US 2Y",
-      "ticker": "^US2YT",
+      "name": "US 30Y",
+      "ticker": "^TYX",
+      "class": "Rates"
+    },
+    {
+      "name": "EUR 2Y",
+      "ticker": "^ECB2Y",
+      "class": "Rates"
+    },
+    {
+      "name": "EUR 5Y",
+      "ticker": "^ECB5Y",
       "class": "Rates"
     },
     {
@@ -116,8 +161,33 @@
       "class": "Rates"
     },
     {
-      "name": "EUR 2Y",
-      "ticker": "^ECB2Y",
+      "name": "EUR 30Y",
+      "ticker": "^ECB30Y",
+      "class": "Rates"
+    },
+    {
+      "name": "JPY 10Y",
+      "ticker": "^JPY10Y",
+      "class": "Rates"
+    },
+    {
+      "name": "US 5Y Real",
+      "ticker": "^US5YR",
+      "class": "Rates"
+    },
+    {
+      "name": "US 10Y Real",
+      "ticker": "^US10YR",
+      "class": "Rates"
+    },
+    {
+      "name": "US 5Y Breakeven",
+      "ticker": "^US5YBE",
+      "class": "Rates"
+    },
+    {
+      "name": "US 10Y Breakeven",
+      "ticker": "^US10YBE",
       "class": "Rates"
     },
     {
@@ -191,36 +261,28 @@
   ],
   "prediction_markets": [
     {
-      "slug": "us-x-iran-permanent-peace-deal-by-may-31-2026-333",
-      "name": "US x Iran permanent peace deal by May 31, 2026?"
+      "slug": "2026-balance-of-power-r-senate-d-house-444",
+      "name": "2026 Balance of Power: R Senate, D House"
     },
     {
-      "slug": "will-wti-reach-120-in-may-2026",
-      "name": "Will WTI Crude Oil (WTI) hit (HIGH) $120 in May?"
+      "slug": "will-andy-burnham-be-the-next-prime-minister-of-the-united-kingdom-in-2026-882",
+      "name": "Will Andy Burnham be the next Prime Minister of the United Kingdom in 2026?"
     },
     {
-      "slug": "strait-of-hormuz-traffic-returns-to-normal-by-end-of-may",
-      "name": "Strait of Hormuz traffic returns to normal by end of May?"
+      "slug": "will-andy-burnham-win-the-2026-makerfield-by-election",
+      "name": "Will Andy Burnham win the 2026 Makerfield by-election?"
     },
     {
-      "slug": "fed-rate-cut-by-june-2026-meeting",
-      "name": "Fed rate cut by June 2026 meeting?"
+      "slug": "strait-of-hormuz-traffic-returns-to-normal-by-end-of-june",
+      "name": "Strait of Hormuz traffic returns to normal by end of June?"
     },
     {
-      "slug": "fed-rate-cut-by-september-2026-meeting-264-382",
-      "name": "Fed rate cut by September 2026 meeting?"
-    },
-    {
-      "slug": "fed-rate-cut-by-december-2026-meeting",
-      "name": "Fed rate cut by December 2026 meeting?"
-    },
-    {
-      "slug": "will-crude-oil-cl-hit-high-120-by-end-of-june-949-198-741-748",
-      "name": "Will Crude Oil (CL) hit (HIGH) $120 by end of June?"
-    },
-    {
-      "slug": "will-crude-oil-cl-hit-high-175-by-end-of-june-456-295",
-      "name": "Will Crude Oil (CL) hit (HIGH) $175 by end of June?"
+      "slug": "strait-of-hormuz-traffic-returns-to-normal-by-july-31",
+      "name": "Strait of Hormuz traffic returns to normal by July 31?"
     }
+  ],
+  "custom_series_ids": [
+    "391859a5",
+    "63ac1ee0"
   ]
 }

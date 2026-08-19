@@ -296,6 +296,7 @@ def _detail_charts(asset1: str, asset2: str,
     )
 
 
+@st.fragment
 def render_correl():
     cfg         = st.session_state.get("wl_config") or load_config()
     instruments = cfg["instruments"]

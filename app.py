@@ -15,6 +15,19 @@ from correl import render_correl
 from prediction import render_prediction
 from volatility import render_volatility
 from stir import render_stir
+from commodities import render_commodities
+from analyzer import render_analyzer
+from equities import render_equities
+from custom_series_tab import render_custom_series
+from options_v2 import render_options_v2
+from rates_options import render_rates_options
+from vol_dashboard import render_vol_dashboard
+from cta import render_cta
+from vol_move import render_vol_adj_move
+from pnl import render_pnl
+from risk import render_risk
+from ltr import render_ltr
+from news import render_news
 
 # ── Page config ────────────────────────────────────────────────────────────────
 st.set_page_config(
@@ -662,129 +675,131 @@ def render_sidebar():
     return ticker, timeframe, overlays, show_volume, show_rsi, show_macd, auto_refresh
 
 
+# ── Lazy-load helper ───────────────────────────────────────────────────────────
+def _tab_loaded(key: str, label: str = "") -> bool:
+    if st.session_state.get(f"tab_{key}"):
+        return True
+    _, col, _ = st.columns([1, 2, 1])
+    with col:
+        btn_label = f"Load {label}" if label else "Load"
+        if st.button(btn_label, key=f"load_btn_{key}", use_container_width=True):
+            st.session_state[f"tab_{key}"] = True
+            st.rerun()
+    return False
+
+
 # ── Main ───────────────────────────────────────────────────────────────────────
 def main():
     ticker, timeframe, overlays, show_volume, show_rsi, show_macd, auto_refresh = render_sidebar()
 
-    tab_charts, tab_macro, tab_rates, tab_correl, tab_pred, tab_vol, tab_stir = st.tabs(["📊  Charts & Indicators", "📋  Macro", "📈  Rates", "🔗  Correl", "🎯  Prediction", "⚡  Volatility", "📉  STIR"])
+    tab_charts, tab_macro, tab_news, tab_eq, tab_rates, tab_correl, tab_pred, tab_vol, tab_stir, tab_com, tab_rp = st.tabs(["📈  Charting", "📋  Macro", "📰  News", "🏦  Equities", "📈  Rates", "🔗  Correl", "🎯  Prediction", "⚡  Volatility", "📉  STIR", "🛢️  Commodities", "💰  Risk & P&L"])
 
     with tab_macro:
-        render_watchlist()
+        sub_core, sub_watch, sub_cta, sub_vm, sub_econ, sub_ecal = st.tabs(
+            ["🧭 Core Markets", "📋 Watchlist", "📐 CTA Signals",
+             "📊 Vol Adj Move", "🌍 Economic Data", "📅 Event Calendar"])
+        with sub_core:
+            if _tab_loaded("macro_core", "Core Markets"):
+                from core_markets import render_core_markets
+                render_core_markets()
+        with sub_watch:
+            if _tab_loaded("macro_watch", "Watchlist"):
+                render_watchlist()
+        with sub_cta:
+            if _tab_loaded("macro_cta", "CTA Signals"):
+                render_cta()
+        with sub_vm:
+            if _tab_loaded("macro_vm", "Vol Adj Move"):
+                render_vol_adj_move()
+        with sub_econ:
+            if _tab_loaded("macro_econ", "Economic Data"):
+                from macro_econ import render_econ
+                render_econ()
+        with sub_ecal:
+            if _tab_loaded("macro_ecal", "Event Calendar"):
+                from events_cal import render_event_calendar
+                render_event_calendar()
+
+    with tab_news:
+        if _tab_loaded("news", "News"):
+            render_news()
+
+    with tab_eq:
+        sub_eq_ind, sub_eq_earn = st.tabs(["📊 Indicators", "📅 Earnings"])
+        with sub_eq_ind:
+            if _tab_loaded("eq", "Equities"):
+                render_equities()
+        with sub_eq_earn:
+            if _tab_loaded("eq_earn", "Earnings"):
+                from earnings import render_earnings
+                render_earnings()
 
     with tab_rates:
-        render_rates()
+        if _tab_loaded("rates", "Rates"):
+            render_rates()
 
     with tab_correl:
-        render_correl()
+        if _tab_loaded("correl", "Correlations"):
+            render_correl()
 
     with tab_pred:
-        render_prediction()
+        if _tab_loaded("pred", "Prediction"):
+            render_prediction()
 
     with tab_vol:
-        render_volatility()
+        sub_volmon, sub_volopt, sub_volrates, sub_voldash, sub_pricer = st.tabs(
+            ["⚡ Monitor", "🔬 Options", "📐 Rates-Vol", "🌐 Vol Dash", "💲 Pricer"])
+        with sub_volmon:
+            if _tab_loaded("vol", "Volatility"):
+                render_volatility()
+        with sub_volopt:
+            if _tab_loaded("opt_v2", "Options"):
+                render_options_v2()
+        with sub_volrates:
+            if _tab_loaded("rates_opt", "Rates Options"):
+                render_rates_options()
+        with sub_voldash:
+            if _tab_loaded("vol_dash", "Vol Dashboard"):
+                render_vol_dashboard()
+        with sub_pricer:
+            if _tab_loaded("pricer", "Pricer"):
+                from pricer import render_pricer
+                render_pricer()
 
     with tab_stir:
-        render_stir()
+        if _tab_loaded("stir", "STIR"):
+            render_stir()
+
+    with tab_com:
+        if _tab_loaded("com", "Commodities"):
+            render_commodities()
+
+    with tab_rp:
+        sub_pnl, sub_risk, sub_ltr = st.tabs(
+            ["💰 P&L Analytics", "⚠️ Risk / VaR", "💼 LT Holdings"])
+        with sub_pnl:
+            if _tab_loaded("pnl", "P&L Analytics"):
+                render_pnl()
+        with sub_risk:
+            if _tab_loaded("risk", "Risk / VaR"):
+                render_risk()
+        with sub_ltr:
+            if _tab_loaded("ltr", "LT Holdings"):
+                render_ltr()
 
     with tab_charts:
-        # ── Market overview ──────────────────────────────────────────────────
-        st.subheader("Market Overview")
-        render_overview_row("Indices",       INDICES)
-        st.markdown("")
-        render_overview_row("Bonds / Rates", BONDS)
-        st.markdown("")
-
-        col_left, col_right = st.columns(2)
-        with col_left:
-            render_overview_row("Commodities", COMMODITIES)
-        with col_right:
-            render_overview_row("Currencies",  CURRENCIES)
-
-        st.markdown("")
-        render_overview_row("Crypto", CRYPTO)
-        st.markdown("---")
-
-        # ── Ticker detail ────────────────────────────────────────────────────
-        q = fetch_realtime_quote(ticker)
-        if q:
-            price      = q["price"]
-            change     = q["change"]
-            change_pct = q["change_pct"]
-            arrow      = "▲" if change >= 0 else "▼"
-            source     = q.get("source", "")
-
-            c1, c2, c3, c4, c5 = st.columns([3, 2, 2, 2, 2])
-            c1.markdown(f"### {ticker}")
-            c1.caption(source)
-            price_fmt = f"{price:,.4f}" if price < 10 else f"{price:,.2f}"
-            c2.metric("Price",    price_fmt)
-            c3.metric("Change",   f"{arrow} {abs(change_pct):.2f}%",
-                      delta=f"{change:+.4f}" if price < 10 else f"{change:+.2f}",
-                      delta_color="normal" if change >= 0 else "inverse")
-            c4.metric("Day High", f"{q['high']:,.2f}" if q.get("high") else "—")
-            c5.metric("Day Low",  f"{q['low']:,.2f}"  if q.get("low")  else "—")
-        else:
-            st.warning(f"Could not fetch data for **{ticker}**. Check the ticker symbol.")
-
-        # ── Chart ────────────────────────────────────────────────────────────
-        period, interval = TIMEFRAMES[timeframe]
-        with st.spinner("Loading chart…"):
-            df = fetch_history(ticker, period, interval)
-
-        if df.empty:
-            st.error("No historical data returned. Try a different ticker or timeframe.")
-            return
-
-        st.plotly_chart(build_main_chart(df, ticker, overlays, show_volume),
-                        use_container_width=True)
-
-        # ── Indicators ───────────────────────────────────────────────────────
-        if show_rsi and show_macd:
-            c1, c2 = st.columns(2)
-            with c1: st.plotly_chart(build_rsi_chart(df),  use_container_width=True)
-            with c2: st.plotly_chart(build_macd_chart(df), use_container_width=True)
-        elif show_rsi:
-            st.plotly_chart(build_rsi_chart(df),  use_container_width=True)
-        elif show_macd:
-            st.plotly_chart(build_macd_chart(df), use_container_width=True)
-
-        # ── Summary stats ────────────────────────────────────────────────────
-        with st.expander("Summary statistics"):
-            last = df.tail(1).iloc[0]
-            stats = {
-                "Open":   f"{last['Open']:.4f}"  if last['Open']  < 10 else f"{last['Open']:,.2f}",
-                "High":   f"{last['High']:.4f}"  if last['High']  < 10 else f"{last['High']:,.2f}",
-                "Low":    f"{last['Low']:.4f}"   if last['Low']   < 10 else f"{last['Low']:,.2f}",
-                "Close":  f"{last['Close']:.4f}" if last['Close'] < 10 else f"{last['Close']:,.2f}",
-                "Volume": fmt_large(last.get("Volume")),
-            }
-            if "RSI" in df:
-                v = df["RSI"].dropna().iloc[-1]
-                zone = "Overbought 🔴" if v > 70 else "Oversold 🟢" if v < 30 else "Neutral ⚪"
-                stats["RSI (14)"] = f"{v:.2f}  —  {zone}"
-            if "MACD" in df:
-                m   = df["MACD"].dropna().iloc[-1]
-                sig = df["MACD_signal"].dropna().iloc[-1]
-                stats["MACD"] = f"{m:.4f}  (Signal: {sig:.4f})"
-            if "SMA20" in df:
-                stats["SMA 20"] = f"{df['SMA20'].dropna().iloc[-1]:,.2f}"
-            if "SMA50" in df:
-                stats["SMA 50"] = f"{df['SMA50'].dropna().iloc[-1]:,.2f}"
-            st.table(pd.DataFrame(stats.items(), columns=["Indicator", "Value"]).set_index("Indicator"))
-
-        # ── Raw data ─────────────────────────────────────────────────────────
-        with st.expander("Raw OHLCV data (last 50 rows)"):
-            display_cols = [c for c in ["Open", "High", "Low", "Close", "Volume"] if c in df.columns]
-            st.dataframe(
-                df[display_cols].tail(50).sort_index(ascending=False).round(2),
-                use_container_width=True,
-            )
-
-        # ── Auto-refresh ─────────────────────────────────────────────────────
-        if auto_refresh:
-            time.sleep(30)
-            st.cache_data.clear()
-            st.rerun()
+        sub_chart, sub_az, sub_cs = st.tabs(
+            ["📈 Chart", "🔍 Analyzer", "🧪 Custom Series"])
+        with sub_chart:
+            if _tab_loaded("charting", "Charting"):
+                from charting import render_charting
+                render_charting()
+        with sub_az:
+            if _tab_loaded("az", "Analyzer"):
+                render_analyzer()
+        with sub_cs:
+            if _tab_loaded("cs", "Custom Series"):
+                render_custom_series()
 
 
 if __name__ == "__main__":

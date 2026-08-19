@@ -8,6 +8,7 @@ Data sources (all free, no API key required):
   Australia  — RBA F2 benchmarks (rba.gov.au)             ~5-day lag
 """
 
+import http.client
 import io
 import re
 import ssl
@@ -117,18 +118,22 @@ def fetch_ecb_curve(start: str | None = None) -> pd.DataFrame:
             f"YC/B.U2.EUR.4F.G_N_A.SV_C_YM.{code}"
             f"?format=csvdata&startPeriod={start}"
         )
-        try:
-            with urllib.request.urlopen(
-                urllib.request.Request(url, headers=_HDR), timeout=10
-            ) as r:
-                tmp = pd.read_csv(io.StringIO(r.read().decode()))
-            tmp = tmp[["TIME_PERIOD", "OBS_VALUE"]].copy()
-            tmp.columns = ["Date", mat]
-            tmp["Date"] = pd.to_datetime(tmp["Date"])
-            tmp[mat] = pd.to_numeric(tmp[mat], errors="coerce")
-            dfs.append(tmp.set_index("Date"))
-        except Exception:
-            pass
+        # Retry each maturity a few times — a single transient timeout used to silently
+        # drop a whole tenor column (e.g. EUR 5Y showing blank downstream).
+        for _attempt in range(3):
+            try:
+                with urllib.request.urlopen(
+                    urllib.request.Request(url, headers=_HDR), timeout=15
+                ) as r:
+                    tmp = pd.read_csv(io.StringIO(r.read().decode()))
+                tmp = tmp[["TIME_PERIOD", "OBS_VALUE"]].copy()
+                tmp.columns = ["Date", mat]
+                tmp["Date"] = pd.to_datetime(tmp["Date"])
+                tmp[mat] = pd.to_numeric(tmp[mat], errors="coerce")
+                dfs.append(tmp.set_index("Date"))
+                break
+            except Exception:
+                continue
     if not dfs:
         return pd.DataFrame()
     return pd.concat(dfs, axis=1).sort_index()
@@ -235,12 +240,28 @@ _BOE_FILES = {
 }
 
 
-def _boe_range(start: int, size: int) -> bytes:
-    req = urllib.request.Request(
-        _BOE_ZIP, headers={**_HDR, "Range": f"bytes={start}-{start+size-1}"}
-    )
-    with urllib.request.urlopen(req, timeout=30) as r:
-        return r.read()
+def _boe_range(start: int, size: int, chunk: int = 2 * 1024 * 1024) -> bytes:
+    """Ranged download in ≤2MB chunks. The BoE server truncates big range
+    responses mid-stream (an 8.9MB request dies ~4.5MB in, which silently
+    blanked the 2016-24 UK history file) — so large reads are split and
+    IncompleteRead partials are kept and resumed from where they stopped."""
+    out = bytearray()
+    pos, end = start, start + size
+    while pos < end:
+        want = min(chunk, end - pos)
+        req = urllib.request.Request(
+            _BOE_ZIP, headers={**_HDR, "Range": f"bytes={pos}-{pos+want-1}"}
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=30) as r:
+                got = r.read()
+        except http.client.IncompleteRead as e:
+            got = e.partial
+        if not got:
+            raise IOError(f"BoE range request stalled at byte {pos}")
+        out += got
+        pos += len(got)
+    return bytes(out)
 
 
 @st.cache_data(ttl=86400)
@@ -441,6 +462,7 @@ def chart_historical(dfs: dict, mat: str, selected: list, period: str) -> go.Fig
 
 # ── Main render ────────────────────────────────────────────────────────────────
 
+@st.fragment
 def render_rates():
     st.markdown("### Global Government Bond Rates")
 

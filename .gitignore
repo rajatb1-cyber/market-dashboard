@@ -2,3 +2,32 @@
 __pycache__/
 *.pyc
 .env
+
+# data & runtime artifacts — regenerated locally, never committed
+*.db
+*.pkl
+*.log
+streamlit_log.txt
+macro_cache/
+rates_options_cache/
+vol_dash_cache/
+retired/
+probe_*.py
+
+# personal account / position / workspace state — stays local
+manual_holdings.json
+pnl_excluded.json
+pricer_saved.json
+pricer_linesets.json
+pricer_portfolios.json
+risk_live_snapshot.json
+risk_prices.json
+risk_selection.json
+flex_last_pull.json
+ibkr_budgets.json
+ibkr_pacing.json
+stir_prefs.json
+conid_exchange.json
+analyzer_models.json
+custom_series.json
+chart_templates.json

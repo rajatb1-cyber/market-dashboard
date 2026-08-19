@@ -5,6 +5,8 @@ Bloomberg-style watchlist — clickable rows, inline charts, persistent config.
 import io
 import json
 import os
+import pathlib
+import sqlite3
 import urllib.request
 import numpy as np
 import pandas as pd
@@ -20,7 +22,7 @@ CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "watchlis
 
 ALL_COLUMNS     = ["Price", "Change %", "Change", "Weekly %", "Monthly %", "YTD %", "RSI (14)", "RSI (30)", "52W High", "52W Low", "Volume"]
 DEFAULT_COLUMNS = ["Price", "Change %", "Weekly %", "Monthly %", "YTD %", "RSI (14)", "RSI (30)", "52W High", "52W Low"]
-ASSET_CLASSES   = ["Equity", "FX", "Rates", "Commodity", "Crypto", "Other"]
+ASSET_CLASSES   = ["Equity", "FX", "Rates", "Commodity", "Crypto", "Custom", "Other"]
 
 CHART_TIMEFRAMES = {
     "1D":  ("1d",  "5m"),
@@ -45,9 +47,14 @@ DEFAULT_INSTRUMENTS = [
     {"name": "GBP/USD",      "ticker": "GBPUSD=X", "class": "FX"},
     {"name": "USD/JPY",      "ticker": "JPY=X",    "class": "FX"},
     {"name": "USD/CHF",      "ticker": "CHF=X",    "class": "FX"},
+    {"name": "US 2Y",        "ticker": "^US2YT",   "class": "Rates"},
+    {"name": "US 5Y",        "ticker": "^FVX",     "class": "Rates"},
     {"name": "US 10Y",       "ticker": "^TNX",     "class": "Rates"},
-    {"name": "US 2Y",        "ticker": "^IRX",     "class": "Rates"},
     {"name": "US 30Y",       "ticker": "^TYX",     "class": "Rates"},
+    {"name": "EUR 2Y",       "ticker": "^ECB2Y",   "class": "Rates"},
+    {"name": "EUR 5Y",       "ticker": "^ECB5Y",   "class": "Rates"},
+    {"name": "EUR 10Y",      "ticker": "^ECB10Y",  "class": "Rates"},
+    {"name": "EUR 30Y",      "ticker": "^ECB30Y",  "class": "Rates"},
     {"name": "Gold",         "ticker": "GC=F",     "class": "Commodity"},
     {"name": "WTI Oil",      "ticker": "CL=F",     "class": "Commodity"},
     {"name": "Brent Crude",  "ticker": "BZ=F",     "class": "Commodity"},
@@ -62,6 +69,7 @@ CLASS_BG = {
     "Rates":     "#FFFBEB",
     "Commodity": "#FFF4ED",
     "Crypto":    "#FAF5FF",
+    "Custom":    "#F0FAFA",
     "Other":     "#F8FAFC",
 }
 CLASS_FG = {
@@ -70,22 +78,118 @@ CLASS_FG = {
     "Rates":     "#B45309",
     "Commodity": "#C2410C",
     "Crypto":    "#6D28D9",
+    "Custom":    "#0F766E",
     "Other":     "#475569",
 }
 UP   = "#059669"
 DOWN = "#DC2626"
 MUTE = "#94A3B8"
 
+# ── Custom series helpers (avoid circular import with analyzer.py) ─────────────
+_HERE_WL    = pathlib.Path(__file__).parent
+_CUSTOM_FILE_WL = str(_HERE_WL / "custom_series.json")
+_STIR_DB_WL     = str(_HERE_WL / "stir_bars.db")
+_COMMOD_DB_WL   = str(_HERE_WL / "commodities_bars.db")
+_CS_SAFE = {"abs": abs, "log": np.log, "log10": np.log10, "exp": np.exp, "sqrt": np.sqrt}
+
+
+def _load_cs_json() -> list[dict]:
+    try:
+        with open(_CUSTOM_FILE_WL, "r") as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return []
+
+
+def _wl_fetch_key(key: str) -> pd.Series:
+    """Fetch a single component series for a custom-series formula."""
+    start = (date.today() - timedelta(days=_DAILY_LOOKBACK)).isoformat()
+    if key.startswith("stir:") or key.startswith("commod:"):
+        parts = key.split(":")
+        _, sym, exch, exp6 = parts
+        db = _STIR_DB_WL if key.startswith("stir:") else _COMMOD_DB_WL
+        table = "stir_bars" if key.startswith("stir:") else "bars"
+        try:
+            conn = sqlite3.connect(db)
+            rows = conn.execute(
+                f"SELECT bar_date, close FROM {table} "
+                "WHERE symbol=? AND exchange=? AND exp6=? ORDER BY bar_date",
+                (sym, exch, exp6),
+            ).fetchall()
+            conn.close()
+        except Exception:
+            return pd.Series(dtype=float)
+        if not rows:
+            return pd.Series(dtype=float)
+        df = pd.DataFrame(rows, columns=["bar_date", "close"])
+        df["bar_date"] = pd.to_datetime(df["bar_date"])
+        df.set_index("bar_date", inplace=True)
+        s = df["close"].astype(float)
+        return s[s.index >= pd.Timestamp(start)]
+    # Yahoo Finance / FRED / ECB etc — reuse _raw_daily (defined later in this file)
+    df = _raw_daily(key)
+    if df.empty:
+        return pd.Series(dtype=float)
+    col = df["Close"]
+    if isinstance(col, pd.DataFrame):
+        col = col.iloc[:, 0]
+    return col.astype(float)
+
+
+@st.cache_data(ttl=300)
+def _fetch_custom_df_cached(cs_id: str) -> pd.DataFrame:
+    """Evaluate a custom series formula and return a Close-column DataFrame."""
+    cs = next((c for c in _load_cs_json() if c["id"] == cs_id), None)
+    if cs is None:
+        return pd.DataFrame()
+    raw: dict[str, pd.Series] = {}
+    for var, spec in cs.get("series", {}).items():
+        s = _wl_fetch_key(spec["key"])
+        if not s.empty:
+            s = s.copy()
+            s.index = pd.to_datetime(s.index).normalize()
+            raw[var] = s
+    if not raw:
+        return pd.DataFrame()
+    combined = pd.concat(raw, axis=1).dropna()
+    if combined.empty:
+        return pd.DataFrame()
+    local_ns = {k: combined[k] for k in raw if k in combined.columns}
+    try:
+        result = eval(cs["formula"], {"__builtins__": None}, {**_CS_SAFE, **local_ns})
+        if not isinstance(result, pd.Series):
+            return pd.DataFrame()
+        df = result.to_frame(name="Close")
+        df["Open"] = df["Close"]
+        df["High"] = df["Close"]
+        df["Low"]  = df["Close"]
+        df["Volume"] = 0
+        return df
+    except Exception:
+        return pd.DataFrame()
+
 
 # ── FRED helpers ───────────────────────────────────────────────────────────────
 FRED_MAP = {
     "^GUKG10": "IRLTLT01GBM156N",   # UK 10Y (monthly, OECD via FRED)
     "^US2YT":  "DGS2",              # US 2Y constant maturity (daily, FRED)
+    "^US5YR":  "DFII5",             # US 5Y real yield / TIPS (daily, FRED)
+    "^US10YR": "DFII10",            # US 10Y real yield / TIPS (daily, FRED)
+    "^US5YBE": "T5YIE",             # US 5Y breakeven inflation (daily, FRED)
+    "^US10YBE":"T10YIE",            # US 10Y breakeven inflation (daily, FRED)
+    "CL=F":    "DCOILWTICO",        # WTI crude oil spot (daily, FRED — better history than yfinance CL=F)
+    "BZ=F":    "DCOILBRENTEU",      # Brent crude oil spot (daily, FRED)
+}
+
+JGB_MAP = {
+    "^JPY10Y": "10Y",   # Japan 10Y JGB — MOF daily via rates.fetch_japan_jgb
 }
 
 ECB_MAP = {
     "^ECB2Y":  "SR_2Y",    # ECB AAA euro area spot rate 2Y
+    "^ECB5Y":  "SR_5Y",    # ECB AAA euro area spot rate 5Y
     "^ECB10Y": "SR_10Y",   # ECB AAA euro area spot rate 10Y
+    "^ECB30Y": "SR_30Y",   # ECB AAA euro area spot rate 30Y
 }
 
 ALPHAVANTAGE_FX_MAP = {
@@ -111,38 +215,61 @@ BBDXY_WEIGHTS = {
 
 
 @st.cache_data(ttl=3600)
-def _fetch_fred_df(series_id: str, start: str = "2020-01-01") -> pd.DataFrame:
-    try:
-        key = st.secrets["FRED_KEY"]
-    except Exception:
+def _fetch_fred_df_cached(series_id: str, start: str) -> pd.DataFrame:
+    """Raises on any failure so Streamlit does not cache empty/error results."""
+    key = st.secrets["FRED_KEY"]          # KeyError propagates → not cached
+    url = (
+        "https://api.stlouisfed.org/fred/series/observations"
+        f"?series_id={series_id}&api_key={key}&file_type=json"
+        f"&sort_order=asc&observation_start={start}"
+    )
+    with urllib.request.urlopen(url, timeout=10) as r:
+        obs = json.loads(r.read().decode())["observations"]
+    rows = [(o["date"], float(o["value"])) for o in obs if o["value"] != "."]
+    if not rows:
         return pd.DataFrame()
+    df = pd.DataFrame(rows, columns=["Date", "Close"])
+    df["Date"] = pd.to_datetime(df["Date"])
+    df.set_index("Date", inplace=True)
+    df["Open"]   = df["Close"]
+    df["High"]   = df["Close"]
+    df["Low"]    = df["Close"]
+    df["Volume"] = 0
+    return df
+
+
+def _fetch_fred_df(series_id: str, start: str = "2020-01-01") -> pd.DataFrame:
+    """Graceful wrapper — returns empty DataFrame on any error."""
     try:
-        url = (
-            "https://api.stlouisfed.org/fred/series/observations"
-            f"?series_id={series_id}&api_key={key}&file_type=json"
-            f"&sort_order=asc&observation_start={start}"
-        )
-        with urllib.request.urlopen(url, timeout=10) as r:
-            obs = json.loads(r.read().decode())["observations"]
-        rows = [(o["date"], float(o["value"])) for o in obs if o["value"] != "."]
-        if not rows:
-            return pd.DataFrame()
-        df = pd.DataFrame(rows, columns=["Date", "Close"])
-        df["Date"] = pd.to_datetime(df["Date"])
-        df.set_index("Date", inplace=True)
-        df["Open"] = df["Close"]
-        df["High"] = df["Close"]
-        df["Low"]  = df["Close"]
-        df["Volume"] = 0
-        return df
+        return _fetch_fred_df_cached(series_id, start)
     except Exception:
         return pd.DataFrame()
 
 
 def _fred_period_start(period: str | None) -> str:
     days = {"1d": 60, "5d": 60, "1mo": 90, "3mo": 100,
-            "6mo": 190, "1y": 370, "2y": 740, "5y": 1830, "10y": 3650}
+            "6mo": 190, "1y": 370, "2y": 740, "5y": 1830, "10y": 3650,
+            "20y": 7320, "max": 36500}
     return (date.today() - timedelta(days=days.get(period or "1y", 370))).isoformat()
+
+
+@st.cache_data(ttl=3600)
+def _fetch_jgb_df(col: str, start: str = "2020-01-01") -> pd.DataFrame:
+    """Convert rates.fetch_japan_jgb() into the standard OHLCV frame used by watchlist."""
+    try:
+        from rates import fetch_japan_jgb
+        df_jgb = fetch_japan_jgb()
+    except Exception:
+        return pd.DataFrame()
+    if df_jgb.empty or col not in df_jgb.columns:
+        return pd.DataFrame()
+    s = df_jgb[col].dropna()
+    s = s[s.index >= pd.Timestamp(start)]
+    if s.empty:
+        return pd.DataFrame()
+    out = pd.DataFrame({"Close": s, "Open": s, "High": s, "Low": s})
+    out["Volume"] = 0
+    return out
 
 
 @st.cache_data(ttl=3600)
@@ -223,7 +350,8 @@ def _compute_bbdxy(start: str) -> pd.DataFrame:
                 df = df[df["Close"].notna()]
             if df.empty:
                 continue
-            s = df["Close"].astype(float).squeeze()
+            _sc = df["Close"]
+            s = (_sc.iloc[:, 0] if isinstance(_sc, pd.DataFrame) else _sc).astype(float)
             if invert:
                 s = 1.0 / s
             idx = pd.DatetimeIndex(s.index)
@@ -263,19 +391,25 @@ def _compute_bbdxy(start: str) -> pd.DataFrame:
 # ── Single source of truth for daily OHLCV ────────────────────────────────────
 _DAILY_LOOKBACK = 670   # 300-day SMA warm-up + 370-day 1Y window
 
-def _raw_daily(ticker: str) -> pd.DataFrame:
-    """670 days of clean daily OHLCV for one ticker. Used by both table and chart
-    so RSI always comes from identical price data in both places."""
-    start = (date.today() - timedelta(days=_DAILY_LOOKBACK)).isoformat()
-    if ticker == "BBDXY_SYNTH":
-        return _compute_bbdxy(start=start)
-    if ticker in FRED_MAP:
-        return _fetch_fred_df(FRED_MAP[ticker], start=start)
-    if ticker in ECB_MAP:
-        return _fetch_ecb_df(ECB_MAP[ticker], start=start)
-    if ticker in ALPHAVANTAGE_FX_MAP:
-        from_sym, to_sym = ALPHAVANTAGE_FX_MAP[ticker]
-        return _fetch_alphavantage_fx(from_sym, to_sym, start=start)
+def _normalize_daily(df: pd.DataFrame) -> pd.DataFrame:
+    """tz-strip → normalize to midnight → dedupe by date (keep last).
+    Exactly the treatment the original _raw_daily applied to every frame."""
+    if df is None or df.empty:
+        return df if df is not None else pd.DataFrame()
+    try:
+        idx = pd.DatetimeIndex(df.index)
+        if idx.tz is not None:
+            idx = idx.tz_convert("UTC").tz_localize(None)
+        df.index = idx.normalize()
+        return df[~df.index.duplicated(keep="last")]
+    except Exception:
+        return df
+
+
+def _yahoo_daily_single(ticker: str, start: str) -> pd.DataFrame:
+    """Per-ticker Yahoo fallback chain: start= → period='1y' → Ticker.history.
+    Identical to the original _raw_daily download logic, used to retry the
+    hard-to-fetch tickers that came back empty from the batch download."""
     try:
         df = yf.download(ticker, start=start, interval="1d",
                          auto_adjust=True, progress=False)
@@ -296,13 +430,129 @@ def _raw_daily(ticker: str) -> pd.DataFrame:
             if isinstance(df.columns, pd.MultiIndex):
                 df.columns = df.columns.get_level_values(0)
             df = df[df["Close"].notna()]
-        idx = pd.DatetimeIndex(df.index)
-        if idx.tz is not None:
-            idx = idx.tz_convert("UTC").tz_localize(None)
-        df.index = idx.normalize()
-        return df[~df.index.duplicated(keep="last")]
+        return _normalize_daily(df)
     except Exception:
         return pd.DataFrame()
+
+
+def _extract_ticker_frame(raw, ticker: str) -> pd.DataFrame:
+    """Pull a single ticker's OHLCV frame out of a multi-ticker yf.download
+    result (group_by='ticker'). Handles MultiIndex keyed by ticker at either
+    column level and the flat-column shape a single-element list can yield.
+    Returns an empty frame for a failed (all-NaN) ticker."""
+    if raw is None or len(raw) == 0:
+        return pd.DataFrame()
+    try:
+        cols = raw.columns
+        if isinstance(cols, pd.MultiIndex):
+            lvl0 = set(cols.get_level_values(0))
+            lvl1 = set(cols.get_level_values(1))
+            if ticker in lvl0:
+                sub = raw[ticker].copy()
+            elif ticker in lvl1:
+                sub = raw.xs(ticker, axis=1, level=1).copy()
+            else:
+                return pd.DataFrame()
+        else:
+            # Flat columns — only happens when effectively one ticker came back
+            sub = raw.copy()
+        if "Close" not in sub.columns:
+            return pd.DataFrame()
+        # Failed tickers in a batch come back all-NaN → this drops every row
+        sub = sub[sub["Close"].notna()]
+        return sub
+    except Exception:
+        return pd.DataFrame()
+
+
+@st.cache_data(ttl=300)
+def _all_daily(tickers: tuple) -> dict:
+    """Single source of truth for daily OHLCV. Returns {ticker: OHLCV DataFrame}.
+
+    Special sources route to their own cached helpers; every plain Yahoo ticker
+    is fetched in ONE batched yf.download and split per-ticker. Failed tickers
+    are retried through the per-ticker fallback chain so hard-to-fetch symbols
+    keep working exactly as before. Only frames with >5 rows are kept.
+    Because table and chart both read this same cache entry, RSI/indicators are
+    always computed from byte-identical price data in both places."""
+    if not tickers:
+        return {}
+    start = (date.today() - timedelta(days=_DAILY_LOOKBACK)).isoformat()
+    out: dict = {}
+    yahoo: list = []
+
+    for tkr in tickers:
+        if tkr == "BBDXY_SYNTH":
+            df = _compute_bbdxy(start=start)
+            if df is not None and not df.empty:
+                out[tkr] = df
+        elif tkr in FRED_MAP:
+            df = _fetch_fred_df(FRED_MAP[tkr], start=start)
+            if not df.empty:
+                out[tkr] = df
+        elif tkr in JGB_MAP:
+            df = _fetch_jgb_df(JGB_MAP[tkr], start=start)
+            if not df.empty:
+                out[tkr] = df
+        elif tkr in ECB_MAP:
+            df = _fetch_ecb_df(ECB_MAP[tkr], start=start)
+            if not df.empty:
+                out[tkr] = df
+        elif tkr in ALPHAVANTAGE_FX_MAP:
+            from_sym, to_sym = ALPHAVANTAGE_FX_MAP[tkr]
+            df = _fetch_alphavantage_fx(from_sym, to_sym, start=start)
+            if not df.empty:
+                out[tkr] = df
+        else:
+            yahoo.append(tkr)
+
+    # ── One batched request for every plain Yahoo ticker ─────────────────────
+    missing: list = []
+    if yahoo:
+        try:
+            raw = yf.download(
+                yahoo, start=start, interval="1d", auto_adjust=True,
+                progress=False, group_by="ticker", threads=True,
+            )
+        except Exception:
+            raw = None
+        for tkr in yahoo:
+            df = _normalize_daily(_extract_ticker_frame(raw, tkr))
+            if df is not None and not df.empty:
+                out[tkr] = df
+            else:
+                missing.append(tkr)
+
+    # ── Retry the tickers the batch could not resolve, one at a time ─────────
+    for tkr in missing:
+        df = _yahoo_daily_single(tkr, start)
+        if not df.empty:
+            out[tkr] = df
+
+    return {t: d for t, d in out.items() if d is not None and not d.empty and len(d) > 5}
+
+
+def _watchlist_tickers() -> tuple:
+    """The full ticker tuple the watchlist table fetches — same config the table
+    reads. Used so _raw_daily hits the exact _all_daily entry the table populated."""
+    try:
+        return tuple(i["ticker"] for i in load_config().get("instruments", []))
+    except Exception:
+        return ()
+
+
+def _raw_daily(ticker: str) -> pd.DataFrame:
+    """670 days of clean daily OHLCV for one ticker. Reads from the shared
+    _all_daily cache so table and chart always use byte-identical price data.
+
+    If the ticker is on the watchlist it returns its slice of the table's own
+    batch entry (a cache hit — zero extra network). Custom-series formulas may
+    reference arbitrary tickers not on the watchlist; those fall back to a
+    single-ticker batch."""
+    wl = _watchlist_tickers()
+    if ticker in wl:
+        return _all_daily(wl).get(ticker, pd.DataFrame())
+    return _all_daily((ticker,)).get(ticker, pd.DataFrame())
 
 
 # ── Config persistence ─────────────────────────────────────────────────────────
@@ -311,8 +561,9 @@ def load_config() -> dict:
         if os.path.exists(CONFIG_FILE):
             with open(CONFIG_FILE, "r") as f:
                 cfg = json.load(f)
-            cfg.setdefault("instruments", DEFAULT_INSTRUMENTS)
-            cfg.setdefault("columns",     DEFAULT_COLUMNS)
+            cfg.setdefault("instruments",       DEFAULT_INSTRUMENTS)
+            cfg.setdefault("columns",           DEFAULT_COLUMNS)
+            cfg.setdefault("custom_series_ids", [])
             return cfg
     except Exception:
         pass
@@ -340,7 +591,7 @@ def save_config(cfg: dict) -> str:
             }
             # Fetch current SHA (required for update)
             req = urllib.request.Request(api_url, headers=headers)
-            with urllib.request.urlopen(req) as resp:
+            with urllib.request.urlopen(req, timeout=20) as resp:
                 sha = json.loads(resp.read())["sha"]
 
             payload = json.dumps({
@@ -350,7 +601,7 @@ def save_config(cfg: dict) -> str:
             }).encode()
             req = urllib.request.Request(api_url, data=payload, method="PUT",
                                          headers=headers)
-            with urllib.request.urlopen(req):
+            with urllib.request.urlopen(req, timeout=20):
                 pass
 
             # Also write locally so the current process sees it immediately
@@ -373,17 +624,13 @@ def save_config(cfg: dict) -> str:
 
 
 # ── Watchlist data ─────────────────────────────────────────────────────────────
-@st.cache_data(ttl=300)
 def fetch_batch(tickers: tuple) -> dict:
-    """Thin wrapper — each ticker is fetched via _raw_daily (shared cache)."""
+    """Thin wrapper over the shared _all_daily cache (the single source of truth).
+    Not itself cached — _all_daily is the cache; no caller relies on
+    fetch_batch.clear()."""
     if not tickers:
         return {}
-    out = {}
-    for tkr in tickers:
-        df = _raw_daily(tkr)
-        if not df.empty and len(df) > 5:
-            out[tkr] = df
-    return out
+    return _all_daily(tuple(tickers))
 
 
 def _f(x):
@@ -400,7 +647,10 @@ def compute_row(inst: dict, df, columns: list) -> dict:
         for c in columns: row[c] = None
         return row
 
-    close = df["Close"].squeeze().dropna().astype(float)
+    _c = df["Close"]
+    if isinstance(_c, pd.DataFrame):
+        _c = _c.iloc[:, 0]
+    close = _c.dropna().astype(float)
     if close.empty:
         for c in columns: row[c] = None
         return row
@@ -461,7 +711,8 @@ def compute_row(inst: dict, df, columns: list) -> dict:
             row[c] = _f(close.min())
         elif c == "Volume":
             try:
-                vol = df["Volume"].squeeze().dropna()
+                _v = df["Volume"]
+                vol = (_v.iloc[:, 0] if isinstance(_v, pd.DataFrame) else _v).dropna()
                 row[c] = _f(vol.iloc[-1]) if not vol.empty else None
             except Exception:
                 row[c] = None
@@ -508,11 +759,14 @@ def style_table(df_display: pd.DataFrame, active_cols: list):
     pct_cols = [c for c in active_cols if c in ("Change %", "Change", "Weekly %", "Monthly %", "YTD %")]
     rsi_cols = [c for c in active_cols if c in ("RSI (14)", "RSI (30)")]
 
-    def color_change(val: str):
-        if isinstance(val, str) and val.startswith("+"):
-            return f"color: {UP}; font-weight: 600"
-        if isinstance(val, str) and val.startswith("-"):
-            return f"color: {DOWN}; font-weight: 600"
+    def color_change(val):
+        try:
+            f = float(val)
+            if not np.isnan(f):
+                if f > 0: return f"color: {UP}; font-weight: 600"
+                if f < 0: return f"color: {DOWN}; font-weight: 600"
+        except (TypeError, ValueError):
+            pass
         return ""
 
     def color_rsi(val: str):
@@ -562,6 +816,7 @@ def fetch_chart_data(ticker: str, period: str | None, interval: str,
         _period_days_map = {
             "1d": 2, "5d": 7, "1mo": 35, "3mo": 100, "6mo": 190,
             "1y": 370, "2y": 740, "5y": 1830, "10y": 3660,
+            "20y": 7320, "max": 36500,
         }
         # FRED / ECB / BBDXY_SYNTH: always daily data regardless of requested interval
         if ticker == "BBDXY_SYNTH":
@@ -575,6 +830,12 @@ def fetch_chart_data(ticker: str, period: str | None, interval: str,
         elif ticker in FRED_MAP:
             fred_start = start if start else _fred_period_start(period)
             df = _fetch_fred_df(FRED_MAP[ticker], start=fred_start)
+            if not df.empty and end:
+                df = df[df.index <= pd.Timestamp(end)]
+            df.dropna(inplace=True)
+        elif ticker in JGB_MAP:
+            jgb_start = start if start else _fred_period_start(period)
+            df = _fetch_jgb_df(JGB_MAP[ticker], start=jgb_start)
             if not df.empty and end:
                 df = df[df.index <= pd.Timestamp(end)]
             df.dropna(inplace=True)
@@ -595,6 +856,7 @@ def fetch_chart_data(ticker: str, period: str | None, interval: str,
             _period_days = {
                 "1d": 2, "5d": 7, "1mo": 35, "3mo": 100, "6mo": 190,
                 "1y": 370, "2y": 740, "5y": 1830, "10y": 3660,
+                "20y": 7320, "max": 36500,
             }
             # For daily ≤1Y views reuse the same cached daily data that the
             # watchlist table uses — this guarantees RSI/indicators are computed
@@ -638,7 +900,8 @@ def fetch_chart_data(ticker: str, period: str | None, interval: str,
             except Exception:
                 pass
         if not df.empty:
-            close = df["Close"].squeeze().astype(float)
+            _cc = df["Close"]
+            close = (_cc.iloc[:, 0] if isinstance(_cc, pd.DataFrame) else _cc).astype(float)
             df["SMA20"]  = ta_lib.trend.SMAIndicator(close, window=20).sma_indicator()
             df["SMA50"]  = ta_lib.trend.SMAIndicator(close, window=50).sma_indicator()
             df["SMA100"] = ta_lib.trend.SMAIndicator(close, window=100).sma_indicator()
@@ -658,7 +921,7 @@ def fetch_chart_data(ticker: str, period: str | None, interval: str,
                 # line, giving clean daily-resolution RSI on an intraday chart.
                 _d = _raw_daily(ticker)
                 if not _d.empty:
-                    _dc = _d["Close"].squeeze().astype(float)
+                    _dc = (_d["Close"].iloc[:, 0] if isinstance(_d["Close"], pd.DataFrame) else _d["Close"]).astype(float)
                     _r14 = ta_lib.momentum.RSIIndicator(_dc, window=rsi_period).rsi()
                     _r30 = ta_lib.momentum.RSIIndicator(_dc, window=30).rsi()
                     _didx = pd.DatetimeIndex(_r14.index)
@@ -745,7 +1008,8 @@ def build_instrument_chart(df: pd.DataFrame, name: str, ticker: str,
         row_heights=[0.58, 0.21, 0.21],
     )
 
-    close = df["Close"].squeeze()
+    _cc = df["Close"]
+    close = _cc.iloc[:, 0] if isinstance(_cc, pd.DataFrame) else _cc
 
     # ── Price trace ────────────────────────────────────────────────────────
     if chart_type == "Line":
@@ -889,6 +1153,7 @@ def build_instrument_chart(df: pd.DataFrame, name: str, ticker: str,
 
 
 # ── Main render ────────────────────────────────────────────────────────────────
+@st.fragment
 def render_watchlist():
     if "wl_config" not in st.session_state:
         st.session_state.wl_config = load_config()
@@ -922,12 +1187,43 @@ def render_watchlist():
     with c4:
         st.markdown("<div style='margin-top:26px'>", unsafe_allow_html=True)
         if st.button("⟳ Refresh", use_container_width=True):
-            st.cache_data.clear()
+            # Targeted invalidation — refresh THIS tab's prices only, never wipe
+            # other tabs' expensive Databento/ECB/Wikipedia caches.
+            _all_daily.clear()
+            fetch_chart_data.clear()
+            _fetch_custom_df_cached.clear()
+            _fetch_fred_df_cached.clear()
+            _fetch_jgb_df.clear()
+            _fetch_ecb_df.clear()
+            _fetch_alphavantage_fx.clear()
             st.rerun()
         st.markdown("</div>", unsafe_allow_html=True)
 
+    # ── Custom series selector ────────────────────────────────────────────────
+    all_cs      = _load_cs_json()
+    cs_name_map = {cs["id"]: cs["name"] for cs in all_cs}
+    sel_cs_ids  = cfg.get("custom_series_ids", [])
+    # Keep only IDs that still exist in custom_series.json
+    sel_cs_ids  = [cid for cid in sel_cs_ids if cid in cs_name_map]
+
+    if all_cs:
+        chosen_names = st.multiselect(
+            "Custom series in Macro",
+            options=[cs["name"] for cs in all_cs],
+            default=[cs_name_map[cid] for cid in sel_cs_ids],
+            placeholder="None — pick series to add",
+        )
+        new_sel_ids = [cs["id"] for cs in all_cs if cs["name"] in chosen_names]
+        if new_sel_ids != sel_cs_ids:
+            cfg["custom_series_ids"] = new_sel_ids
+            save_config(cfg)
+            st.session_state.wl_config = cfg
+            sel_cs_ids = new_sel_ids
+
+    active_cs = [cs for cs in all_cs if cs["id"] in sel_cs_ids]
+
     # ── Asset class filter pills ──────────────────────────────────────────────
-    present_classes = sorted({i["class"] for i in instruments})
+    present_classes = sorted({i["class"] for i in instruments} | ({"Custom"} if active_cs else set()))
     selected_classes = st.pills(
         "Filter by asset class", options=present_classes,
         default=present_classes, selection_mode="multi",
@@ -941,6 +1237,15 @@ def render_watchlist():
         batch = fetch_batch(tickers)
 
     rows = [compute_row(inst, batch.get(inst["ticker"]), active_cols) for inst in instruments]
+
+    # Append selected custom series rows
+    if active_cs and "Custom" in selected_classes:
+        for cs in active_cs:
+            cs_df = _fetch_custom_df_cached(cs["id"])
+            cs_inst = {"name": cs["name"], "class": "Custom", "ticker": f"custom:{cs['id']}"}
+            row = compute_row(cs_inst, cs_df if not cs_df.empty else None, active_cols)
+            rows.append(row)
+
     df_rows = pd.DataFrame(rows)
 
     # Filter & sort
@@ -980,10 +1285,13 @@ def render_watchlist():
         row_data = df_display.iloc[row_idx]
         inst_name = row_data["Name"]
 
-        # Look up ticker
-        inst = next((i for i in instruments if i["name"] == inst_name), None)
-        if inst:
-            st.session_state.wl_selected = inst
+        # Custom series — no ticker chart available; clear any previous selection
+        if any(cs["name"] == inst_name for cs in active_cs):
+            st.session_state.wl_selected = None
+        else:
+            inst = next((i for i in instruments if i["name"] == inst_name), None)
+            if inst:
+                st.session_state.wl_selected = inst
 
     sel = st.session_state.wl_selected
     if sel:
@@ -1102,7 +1410,8 @@ def render_watchlist():
                         cfg["instruments"].append(entry)
                         save_config(cfg)
                         st.session_state.wl_config = cfg
-                        st.cache_data.clear()
+                        # Ticker tuple changed → _all_daily gets a fresh cache
+                        # key automatically; no clear() needed.
                         st.success(f"✓ Added {name} ({ticker})")
                         st.rerun()
                     else:
@@ -1120,7 +1429,8 @@ def render_watchlist():
                                           if i["name"] not in to_remove]
                     save_config(cfg)
                     st.session_state.wl_config = cfg
-                    st.cache_data.clear()
+                    # Ticker tuple changed → _all_daily gets a fresh cache key
+                    # automatically; no clear() needed.
                     st.rerun()
                 else:
                     st.warning("Select at least one instrument to remove.")

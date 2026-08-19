@@ -140,6 +140,7 @@ def _parse_market(data: dict) -> dict:
 
 # ── Render ─────────────────────────────────────────────────────────────────────
 
+@st.fragment
 def render_prediction():
     cfg     = st.session_state.get("wl_config") or load_config()
     markets = cfg.get("prediction_markets", [])

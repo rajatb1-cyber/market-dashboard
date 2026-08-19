@@ -1,0 +1,85 @@
+# Curated free finance RSS/Atom feeds for the News tab.
+# Edit freely: set enabled:false to mute a source, add your own.
+# `class_hint` biases topic tagging; leave blank for general.
+# Full-text is NOT fetched — only the headline+summary the feed publishes
+# (you read the full article via the link, in your own browser/subscriptions).
+
+feeds:
+  - name: WSJ Markets
+    url: https://feeds.a.dj.com/rss/RSSMarketsMain.xml
+    enabled: true
+  - name: WSJ World
+    url: https://feeds.a.dj.com/rss/RSSWorldNews.xml
+    enabled: true
+  - name: MarketWatch Top
+    url: http://feeds.marketwatch.com/marketwatch/topstories/
+    enabled: true
+  - name: MarketWatch RealTime
+    url: http://feeds.marketwatch.com/marketwatch/marketpulse/
+    enabled: true
+  - name: CNBC Markets
+    url: https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=20910258
+    enabled: true
+  - name: CNBC Economy
+    url: https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=20910258
+    class_hint: macro
+    enabled: false
+  - name: Yahoo Finance
+    url: https://finance.yahoo.com/news/rssindex
+    enabled: true
+  - name: FT Home
+    url: https://www.ft.com/rss/home
+    enabled: true
+  - name: Barron's Real-Time
+    url: https://www.barrons.com/xml/rss/3_7510.xml
+    enabled: false        # feed returns 0 — disabled 2026-08-03
+  - name: Guardian Business
+    url: https://www.theguardian.com/uk/business/rss
+    enabled: true
+  - name: CNBC Finance
+    url: https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=10000664
+    enabled: true
+  - name: MarketWatch Bulletins
+    url: http://feeds.marketwatch.com/marketwatch/bulletins
+    enabled: true
+  - name: Bloomberg Markets
+    url: https://feeds.bloomberg.com/markets/news.rss
+    enabled: true
+  - name: Bloomberg Economics
+    url: https://feeds.bloomberg.com/economics/news.rss
+    class_hint: macro
+    enabled: true
+  - name: Reuters Business
+    url: https://www.reutersagency.com/feed/?best-topics=business-finance&post_type=best
+    enabled: false        # feed returns 0 — disabled 2026-08-03
+  - name: Seeking Alpha
+    url: https://seekingalpha.com/feed.xml
+    enabled: true
+  - name: ZeroHedge
+    url: https://feeds.feedburner.com/zerohedge/feed
+    enabled: true
+  - name: Investing.com
+    url: https://www.investing.com/rss/news_25.rss
+    enabled: true
+  - name: CoinDesk
+    url: https://www.coindesk.com/arc/outboundfeeds/rss/
+    class_hint: crypto
+    enabled: true
+  # ── Central banks (primary source, high signal) ──
+  - name: Fed Press
+    url: https://www.federalreserve.gov/feeds/press_all.xml
+    class_hint: rates
+    enabled: true
+  - name: ECB Press
+    url: https://www.ecb.europa.eu/rss/press.html
+    class_hint: rates
+    enabled: true
+  - name: BoE News
+    url: https://www.bankofengland.co.uk/rss/news
+    class_hint: rates
+    enabled: true
+
+# Finnhub general market news (uses your existing FINNHUB_KEY secret; free tier).
+finnhub:
+  enabled: true
+  category: general
