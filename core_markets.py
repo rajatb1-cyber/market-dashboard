@@ -74,6 +74,7 @@ _SPEC = [
     ("Equities", "Nikkei 225",     "^N225",     "px"),
     ("Equities", "KOSPI",          "^KS11",     "px"),
     ("Equities", "Nifty 50",       "^NSEI",     "px"),
+    ("FX",       "BBDXY",          "BBDXY_SYNTH", "synth"),
     ("FX",       "EUR/USD",        "EURUSD=X",  "px"),
     ("FX",       "USD/JPY",        "USDJPY=X",  "px"),
     ("FX",       "GBP/USD",        "GBPUSD=X",  "px"),
@@ -291,6 +292,56 @@ def _px_hist(tkr: str):
         return None
 
 
+# ── synthetic BBDXY row ──────────────────────────────────────────────────────
+# Daily history = watchlist's BBDXY_SYNTH (geometric 12-pair basket, base
+# 1200 at window start — the LEVEL is window-relative, changes are the
+# signal). Live level/1d: same weighted Δlog computed from the component
+# pairs' live 5m quotes, weights renormalised over the fresh components
+# (≥8 of 12 required), applied to the last completed daily close.
+@st.cache_data(ttl=21600, show_spinner=False)
+def _bbdxy_hist_c():
+    from watchlist import fetch_chart_data
+    c = fetch_chart_data("BBDXY_SYNTH", "2y", "1d")["Close"].dropna()
+    if c.empty:
+        raise ValueError("no BBDXY_SYNTH history")
+    return [(i.date() if hasattr(i, "date") else i, float(v))
+            for i, v in c.items()]
+
+
+def _bbdxy_hist():
+    try:
+        return _bbdxy_hist_c()
+    except Exception:
+        return None
+
+
+def _bbdxy_live(px: dict):
+    """(live_level, pct_1d, stalest_ts, sess_date) from component quotes +
+    the daily hist, or (last_close, None, None, last_date) fallback."""
+    from watchlist import BBDXY_WEIGHTS
+    hist = _bbdxy_hist()
+    if not hist:
+        return None
+    dlogs, w_used, tss = [], 0.0, []
+    for tkr, (w, invert) in BBDXY_WEIGHTS.items():
+        d = px.get(tkr)
+        if not d or not d[0] or not d[1]:
+            continue
+        last, prev, ts_iso = d
+        dlogs.append((w, (-1 if invert else 1) * np.log(last / prev)))
+        w_used += w
+        tss.append(pd.Timestamp(ts_iso))
+    if len(dlogs) < 8:                     # too few fresh legs → stale close
+        d0, v0 = hist[-1]
+        return v0, None, None, d0
+    sess_d = max(t.date() for t in tss)
+    base = [v for d0, v in hist if d0 < sess_d]
+    if not base:
+        return None
+    pct = (np.exp(sum(w * dl for w, dl in dlogs) / w_used) - 1) * 100
+    return base[-1] * (1 + pct / 100), pct, min(tss), sess_d
+
+
 # ── CNBC yield rows ──────────────────────────────────────────────────────────
 def _pnum(s):
     try:
@@ -478,6 +529,8 @@ def _row_hist(tkr: str, kind: str):
     if kind == "sprd":
         a, b = tkr.split("|")
         return [(d, v * 100) for d, v in _sprd_hist(a, b)]
+    if kind == "synth":
+        return _bbdxy_hist()
     return None
 
 
@@ -486,7 +539,7 @@ def _chart_rows() -> dict:
     (★ Watchlist duplicates collapse onto the same underlying data)."""
     rows = {}
     for _g, name, tkr, kind in _SPEC:
-        if kind in ("px", "cnbc", "sprd") and name not in rows:
+        if kind in ("px", "cnbc", "sprd", "synth") and name not in rows:
             rows[name] = (tkr, kind)
     return rows
 
@@ -515,7 +568,7 @@ def _chart_panel(sel):
         x=[d for d, _v in w], y=[v for _d, v in w], mode="lines", name=sel,
         line=dict(color=col, width=3.5),
         hovertemplate="%{x|%d %b %y} · %{y:,.4g}<extra>" + sel + "</extra>"))
-    unit = {"px": "", "cnbc": "%", "sprd": "bp"}[kind]
+    unit = {"px": "", "cnbc": "%", "sprd": "bp", "synth": ""}[kind]
     fig.update_layout(
         height=320, margin=dict(l=10, r=10, t=28, b=10), showlegend=False,
         plot_bgcolor="#FFFFFF", xaxis=dict(gridcolor="#F1F5F9"),
@@ -638,7 +691,10 @@ def render_core_markets():
     yl_syms = tuple(dict.fromkeys(s[2] for s in _SPEC if s[3] == "cnbc"))
     _legs = {l for s in _SPEC if s[3] == "sprd" for l in s[2].split("|")}
     yl_syms = yl_syms + tuple(sorted(_legs - set(yl_syms)))
-    px = _fetch_px(px_tkrs + tuple(sorted(set(_FUT_LIVE.values()))))
+    from watchlist import BBDXY_WEIGHTS
+    _extra = tuple(sorted(set(_FUT_LIVE.values()) | set(BBDXY_WEIGHTS)
+                          - set(px_tkrs)))
+    px = _fetch_px(px_tkrs + _extra)
     try:
         try:
             quotes = _cnbc_yields(yl_syms)
@@ -688,6 +744,21 @@ def render_core_markets():
                 rsi14, rsi30 = _rsi_vals(hist, sess_d)
                 _tt = [pd.Timestamp(t) for t in (tsa, tsb) if t]
                 ts = min(_tt) if _tt else None      # staler leg = honesty
+        elif kind == "synth":
+            r = _bbdxy_live(px)
+            if r:
+                last, pct, ts, sess_d = r
+                hist = _bbdxy_hist()
+                pts = [(d0, v) for d0, v in (hist or []) if d0 < sess_d]
+                d3 = None
+                if len(pts) >= 3 and (sess_d - pts[-3][0]).days <= 10 \
+                        and pts[-3][1]:
+                    d3 = (last / pts[-3][1] - 1) * 100
+                cells, vol_d, ratios = _chg_cells(last, hist, sess_d,
+                                                  False, pct, d3)
+                lvl = f"{last:,.1f}"
+                vol_s = f"{vol_d:.2f}%" if vol_d else "—"
+                rsi14, rsi30 = _rsi_vals(hist, sess_d)
         else:
             d = px.get(tkr)
             if d:
@@ -800,7 +871,12 @@ def render_core_markets():
              "cash close off-hours. "
              "1w/1m/3m/YTD vs daily closes (1w = 7 calendar days back, "
              "1m/3m = calendar months, YTD = last close of prior year; "
-             "CNH history via AlphaVantage). Yields: CNBC/Refinitiv feed; "
+             "CNH history via AlphaVantage). BBDXY = synthetic Bloomberg "
+             "dollar index (geometric 12-pair basket, base 1200 at window "
+             "start — the level is window-relative, read the changes); live "
+             "level/1d computed from the component pairs' live quotes, "
+             "weights renormalised over fresh legs; freshness dot = stalest "
+             "leg. Yields: CNBC/Refinitiv feed; "
              "1d Δbp vs previous US close for US and vs previous LOCAL cash "
              "close for DE/UK/JP (last print ≤17:30 Berlin / 16:30 London / "
              "15:15 Tokyo from CNBC minute-bar history — terminal "
