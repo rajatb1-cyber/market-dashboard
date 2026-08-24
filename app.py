@@ -11,7 +11,6 @@ import urllib.request
 import finnhub
 from watchlist import render_watchlist
 from rates import render_rates
-from correl import render_correl
 from prediction import render_prediction
 from volatility import render_volatility
 from stir import render_stir
@@ -23,7 +22,6 @@ from options_v2 import render_options_v2
 from rates_options import render_rates_options
 from vol_dashboard import render_vol_dashboard
 from cta import render_cta
-from vol_move import render_vol_adj_move
 from pnl import render_pnl
 from risk import render_risk
 from ltr import render_ltr
@@ -692,12 +690,12 @@ def _tab_loaded(key: str, label: str = "") -> bool:
 def main():
     ticker, timeframe, overlays, show_volume, show_rsi, show_macd, auto_refresh = render_sidebar()
 
-    tab_charts, tab_macro, tab_news, tab_eq, tab_rates, tab_correl, tab_pred, tab_vol, tab_stir, tab_com, tab_rp = st.tabs(["📈  Charting", "📋  Macro", "📰  News", "🏦  Equities", "📈  Rates", "🔗  Correl", "🎯  Prediction", "⚡  Volatility", "📉  STIR", "🛢️  Commodities", "💰  Risk & P&L"])
+    tab_charts, tab_macro, tab_news, tab_eq, tab_rates, tab_pred, tab_vol, tab_stir, tab_com, tab_rp = st.tabs(["📈  Charting", "📋  Macro", "📰  News", "🏦  Equities", "📈  Rates", "🎯  Prediction", "⚡  Volatility", "📉  STIR", "🛢️  Commodities", "💰  Risk & P&L"])
 
     with tab_macro:
-        sub_core, sub_watch, sub_cta, sub_vm, sub_econ, sub_ecal = st.tabs(
-            ["🧭 Core Markets", "📋 Watchlist", "📐 CTA Signals",
-             "📊 Vol Adj Move", "🌍 Economic Data", "📅 Event Calendar"])
+        sub_core, sub_watch, sub_cta, sub_corr, sub_econ, sub_ecal = \
+            st.tabs(["🧭 Core Markets", "📋 Watchlist", "📐 CTA Signals",
+                     "🔗 Correl", "🌍 Economic Data", "📅 Event Calendar"])
         with sub_core:
             if _tab_loaded("macro_core", "Core Markets"):
                 from core_markets import render_core_markets
@@ -708,9 +706,10 @@ def main():
         with sub_cta:
             if _tab_loaded("macro_cta", "CTA Signals"):
                 render_cta()
-        with sub_vm:
-            if _tab_loaded("macro_vm", "Vol Adj Move"):
-                render_vol_adj_move()
+        with sub_corr:
+            if _tab_loaded("correl", "Correlations"):
+                from correl import render_correl
+                render_correl()
         with sub_econ:
             if _tab_loaded("macro_econ", "Economic Data"):
                 from macro_econ import render_econ
@@ -737,10 +736,6 @@ def main():
     with tab_rates:
         if _tab_loaded("rates", "Rates"):
             render_rates()
-
-    with tab_correl:
-        if _tab_loaded("correl", "Correlations"):
-            render_correl()
 
     with tab_pred:
         if _tab_loaded("pred", "Prediction"):

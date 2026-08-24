@@ -72,7 +72,8 @@ _MEASURES = {
 # source module's config (_MARKETS_V2 / _MARKETS_RATES) — validated at import below.
 # NOTE: "Rates — Yield Vol" and "Rates — Price Vol" reference the SAME five markets;
 # the underlying data/curve is loaded and built ONCE and read out through two measures.
-_RATES_MKTS = [("FV", "5Y UST (FV)"), ("TY", "10Y UST (TY)"),
+_RATES_MKTS = [("TU", "2Y UST (TU)"), ("FV", "5Y UST (FV)"),
+               ("TY", "10Y UST (TY)"),
                ("US", "T-Bond (ZB)"), ("UB", "Ultra Bond (UB)"),
                ("DU", "Euro-Schatz (DU)"), ("OE", "Euro-Bobl (OE)"),
                ("RX", "Euro-Bund (RX)"), ("UX", "Euro-Buxl (UB)")]
@@ -80,8 +81,8 @@ _RATES_MKTS = [("FV", "5Y UST (FV)"), ("TY", "10Y UST (TY)"),
 # Bloomberg roots for the Rates—Yield panel's BBG column (Rajat 2026-08-04;
 # NB our internal keys are mostly bbg-style already — the exceptions are UB
 # (bbg WN) and the ZB future living under key "US").
-_BBG_ROOTS = {"FV": "FV", "TY": "TY", "US": "US", "UB": "WN", "OE": "OE",
-              "RX": "RX", "UX": "UB", "DU": "DU"}
+_BBG_ROOTS = {"TU": "TU", "FV": "FV", "TY": "TY", "US": "US", "UB": "WN",
+              "OE": "OE", "RX": "RX", "UX": "UB", "DU": "DU"}
 
 _PANELS = [
     ("Equities",          "ATM IV · %/yr",          "v2",    "iv_pct",

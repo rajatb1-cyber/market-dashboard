@@ -1,0 +1,201 @@
+[
+ {
+  "name": "S&P PS watch",
+  "lines": [
+   {
+    "kind": "opt",
+    "cls": "Equities",
+    "src": "v2",
+    "mkt": "ES",
+    "lots": 10,
+    "desc": "7600/7500 ps",
+    "exp": "2026-09-18"
+   },
+   {
+    "kind": "opt",
+    "cls": "Equities",
+    "src": "v2",
+    "mkt": "ES",
+    "lots": 10,
+    "desc": "7600/7500 ps",
+    "exp": "2026-10-16"
+   },
+   {
+    "kind": "opt",
+    "cls": "Equities",
+    "src": "v2",
+    "mkt": "ES",
+    "lots": 10,
+    "desc": "7600/7500 ps",
+    "exp": "2026-08-31"
+   }
+  ],
+  "ts": "2026-08-19T21:47",
+  "show_all": true
+ },
+ {
+  "name": "US front end Watch",
+  "lines": [
+   {
+    "kind": "opt",
+    "cls": "STIRs",
+    "src": "rates",
+    "mkt": "SOFR",
+    "lots": 100,
+    "desc": "95.875/95.75 ps",
+    "exp": "2027-01-15"
+   },
+   {
+    "kind": "opt",
+    "cls": "STIRs",
+    "src": "rates",
+    "mkt": "SOFR",
+    "lots": 100,
+    "desc": "96.0/95.875 ps",
+    "exp": "2026-10-16"
+   },
+   {
+    "kind": "opt",
+    "cls": "STIRs",
+    "src": "rates",
+    "mkt": "SOFR",
+    "lots": 100,
+    "desc": "96.5 call",
+    "exp": "2026-10-16"
+   },
+   {
+    "kind": "opt",
+    "cls": "STIRs",
+    "src": "rates",
+    "mkt": "SOFR",
+    "lots": 100,
+    "desc": "96.375 call",
+    "exp": "2026-10-16"
+   },
+   {
+    "kind": "opt",
+    "cls": "STIRs",
+    "src": "rates",
+    "mkt": "SOFR",
+    "lots": 100,
+    "desc": "96.5 call",
+    "exp": "2026-12-11"
+   },
+   {
+    "kind": "opt",
+    "cls": "STIRs",
+    "src": "rates",
+    "mkt": "SOFR",
+    "lots": 100,
+    "desc": "96.625 call",
+    "exp": "2026-12-11"
+   }
+  ],
+  "show_all": false,
+  "ts": "2026-08-19T22:29"
+ },
+ {
+  "name": "Rates Dv01",
+  "lines": [
+   {
+    "kind": "fut",
+    "cls": "Rates",
+    "src": "rates",
+    "mkt": "FV",
+    "lots": 10,
+    "desc": "future (long)",
+    "exp": null
+   },
+   {
+    "kind": "fut",
+    "cls": "Rates",
+    "src": "rates",
+    "mkt": "TY",
+    "lots": 10,
+    "desc": "future (long)",
+    "exp": null
+   },
+   {
+    "kind": "fut",
+    "cls": "Rates",
+    "src": "rates",
+    "mkt": "OE",
+    "lots": 10,
+    "desc": "future (long)",
+    "exp": null
+   },
+   {
+    "kind": "fut",
+    "cls": "Rates",
+    "src": "rates",
+    "mkt": "RX",
+    "lots": 10,
+    "desc": "future (long)",
+    "exp": null
+   },
+   {
+    "kind": "fut",
+    "cls": "Rates",
+    "src": "rates",
+    "mkt": "UB",
+    "lots": 10,
+    "desc": "future (long)",
+    "exp": null
+   },
+   {
+    "kind": "fut",
+    "cls": "Rates",
+    "src": "rates",
+    "mkt": "UX",
+    "lots": 10,
+    "desc": "future (long)",
+    "exp": null
+   },
+   {
+    "kind": "fut",
+    "cls": "Rates",
+    "src": "rates",
+    "mkt": "DU",
+    "lots": 10,
+    "desc": "future (long)",
+    "exp": null
+   },
+   {
+    "kind": "fut",
+    "cls": "Rates",
+    "src": "rates",
+    "mkt": "TU",
+    "lots": 10,
+    "desc": "future (long)",
+    "exp": null
+   }
+  ],
+  "show_all": false,
+  "ts": "2026-08-21T22:43"
+ },
+ {
+  "name": "FX Options",
+  "lines": [
+   {
+    "kind": "opt",
+    "cls": "FX",
+    "src": "v2",
+    "mkt": "EUR",
+    "lots": 100,
+    "desc": "1.165/1.16 ps",
+    "exp": "2026-09-04"
+   },
+   {
+    "kind": "opt",
+    "cls": "FX",
+    "src": "v2",
+    "mkt": "EUR",
+    "lots": 100,
+    "desc": "1.16/1.1575 ps",
+    "exp": "2026-09-04"
+   }
+  ],
+  "show_all": false,
+  "ts": "2026-08-21T23:01"
+ }
+]

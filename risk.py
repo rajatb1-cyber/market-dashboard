@@ -334,6 +334,8 @@ def build_speculative_book(
     df["upnl_base"] = df.get("FifoPnlUnrealized", 0.0) * df["FXRateToBase"]
 
     # ── Aggregate lots → net position per instrument ─────────────────────────
+    if "Put/Call" not in df.columns:      # older Flex templates lack the field
+        df["Put/Call"] = None
     key = "Conid" if "Conid" in df.columns and df["Conid"].notna().any() else "Symbol"
 
     def _first(s):
@@ -351,6 +353,7 @@ def build_speculative_book(
             Exchange=("ListingExchange", _first),
             Expiry=("Expiry", _first),
             Strike=("Strike", _first),
+            PutCall=("Put/Call", _first),
             Multiplier=("Multiplier", _first),
             MarkPrice=("MarkPrice", _first),
             Quantity=("Quantity", "sum"),
@@ -364,9 +367,12 @@ def build_speculative_book(
     agg["side"] = agg["Quantity"].apply(
         lambda q: "Long" if q > 0 else ("Short" if q < 0 else "Flat")
     )
-    # Options (futures options FOP / equity options OPT) — flag for separate handling.
-    agg["is_option"] = (agg["AssetClass"].fillna("").astype(str).str.upper()
-                        .isin({"FOP", "OPT", "FUTOPT", "OPTFUT"}))
+    # Options (futures options FOP / equity options OPT) — flag for separate
+    # handling. Eurex physically-settled futures options come through as
+    # FSFOP (seen live 2026-08-24: "P OGBL … " Bund put) → match any *FOP*.
+    _ac = agg["AssetClass"].fillna("").astype(str).str.upper()
+    agg["is_option"] = (_ac.str.contains("FOP")
+                        | _ac.isin({"OPT", "FUTOPT", "OPTFUT"}))
     agg["gross_base"] = agg["position_value_base"].abs()
     return agg.sort_values("gross_base", ascending=False).reset_index(drop=True)
 
@@ -1070,7 +1076,10 @@ def _agg_table_html(rows: list) -> str:
     t1 = sum((x[6] or 0.0) for x in _live_rows)
     t3 = sum((x[7] or 0.0) for x in _live_rows)
     t5 = sum((x[8] or 0.0) for x in _live_rows)
-    texp = sum(x[5] for x in rows if x[0] == "FX")   # exposure only meaningful for FX
+    # Net USD position = −(sum of non-USD exposures): short EUR/GBP/… ⇒ long
+    # USD, shown positive (Rajat 2026-08-21: the total is MY USD position,
+    # not the foreign-ccy sum). Exposure only meaningful for FX rows.
+    tusd = -sum(x[5] for x in rows if x[0] == "FX")
     _tlabel = f"Total (intraday: {len(_live_rows)}/{len(rows)})"
     _pnl_or_dash = lambda t: (f"<span style='color:{_pnl_color(t)}'>${t:,.0f}</span>"
                               if _live_rows else "<span style='color:#CBD5E1'>—</span>")
@@ -1085,7 +1094,9 @@ def _agg_table_html(rows: list) -> str:
         f"<td style='{tf}'>{_pnl_or_dash(t3)}</td>"
         f"<td style='{tf}'>{_pnl_or_dash(t5)}</td>"
         f"<td style='{tf}'></td>"
-        f"<td style='{tf}'>${texp:,.0f}</td>"
+        f"<td style='{tf}' title='net USD position: + = long USD, − = short USD'>"
+        f"{'+' if tusd >= 0 else '−'}${abs(tusd):,.0f}"
+        f" <span style='color:#94A3B8;font-weight:500;font-size:9px'>USD</span></td>"
         f"<td style='{tf}'></td><td style='{tf}'></td><td style='{tf}'></td></tr>"
     )
     return (f"<div style='overflow-x:auto'><table style='border-collapse:collapse;width:100%;"
@@ -1099,6 +1110,108 @@ _VTD  = "font-size:11px;padding:4px 8px;border-bottom:1px solid #E2E8F0;text-ali
 _VTDL = _VTD.replace("text-align:right", "text-align:left")
 _VTF  = "font-size:11px;padding:5px 8px;border-top:2px solid #475569;font-weight:800;text-align:right"
 _VTFL = _VTF.replace("text-align:right", "text-align:left")
+
+
+_SPLIT_ORDER = ["FX", "Equities", "Rates", "Commod", "Crypto"]
+
+
+def _net_split_html(split: dict) -> str:
+    """Net delta risk by asset class × underlying (Rajat 2026-08-24): per
+    class a table of unique underlyings sorted by |total|, columns = linear
+    Delta risk / Option Δ risk / Total. Rates in $/bp, everything else $
+    notional. Generic over classes — Commod/Crypto appear when positions do."""
+    th, th_l, td, td_l, tf, tf_l = _VTH, _VTHL, _VTD, _VTDL, _VTF, _VTFL
+    cards = ""
+    classes = ([c for c in _SPLIT_ORDER if c in split]
+               + [c for c in split if c not in _SPLIT_ORDER])
+    for cls in classes:
+        unit = "$/bp" if cls == "Rates" else "$ notional"
+        rows = sorted(split[cls].items(),
+                      key=lambda kv: -abs(kv[1][0] + kv[1][1]))
+        h = (f"<tr><th style='{th_l}'>Underlying</th>"
+             f"<th style='{th}'>Delta risk</th>"
+             f"<th style='{th}'>Option Δ risk</th>"
+             f"<th style='{th}'>Total</th></tr>")
+        b, t_f, t_o = "", 0.0, 0.0
+
+        def _sv(v):
+            if not v:
+                return f"<span style='color:#CBD5E1'>—</span>"
+            return (f"<span style='color:{_pnl_color(1 if v > 0 else -1)}'>"
+                    f"{'+' if v > 0 else '−'}${abs(v):,.0f}</span>")
+        for key, (fv, ov) in rows:
+            t_f += fv
+            t_o += ov
+            tot = fv + ov
+            b += (f"<tr><td style='{td_l}'><b>{key}</b></td>"
+                  f"<td style='{td}'>{_sv(fv)}</td>"
+                  f"<td style='{td}'>{_sv(ov)}</td>"
+                  f"<td style='{td};font-weight:700'>{_sv(tot)}</td></tr>")
+        b += (f"<tr><td style='{tf_l}'>Net</td><td style='{tf}'>{_sv(t_f)}</td>"
+              f"<td style='{tf}'>{_sv(t_o)}</td>"
+              f"<td style='{tf}'>{_sv(t_f + t_o)}</td></tr>")
+        cards += (f"<div style='flex:1 1 240px;min-width:240px'>"
+                  f"<b style='font-size:12px'>{cls} <span style='color:#94A3B8;"
+                  f"font-weight:400'>· {unit}</span></b>"
+                  f"<table style='border-collapse:collapse;width:100%;"
+                  f"font-family:monospace'><thead>{h}</thead>"
+                  f"<tbody>{b}</tbody></table></div>")
+    note = ("<div style='font-size:10px;color:#94A3B8;padding:3px 2px'>"
+            "<b>Delta risk</b> = linear positions (futures $ notional / $DV01, "
+            "FX cash balances). <b>Option Δ risk</b> = options mapped to their "
+            "underlying-equivalent (delta × lots × mult, × DV01 → $/bp for "
+            "rates; × F → notional otherwise) — requires an options mode in "
+            "the dropdown. Signs: + long / − short the underlying.</div>")
+    return ("<b style='font-size:12px'>Net delta risk by underlying</b>"
+            f"<div style='display:flex;flex-wrap:wrap;gap:18px'>{cards}</div>"
+            + note)
+
+
+def _opt_var_html(ors: dict) -> str:
+    """Options VaR box (risk_options result) — per-position + reval total."""
+    th, th_l, td, td_l, tf, tf_l = _VTH, _VTHL, _VTD, _VTDL, _VTF, _VTFL
+    lbl = ("Delta-equivalent mapping" if ors["mode"] == "delta"
+           else "Full-revaluation historical (price risk, vol held constant)")
+    h = (f"<tr><th style='{th_l}'>Option</th><th style='{th_l}'>Mkt</th>"
+         f"<th style='{th}'>Leg</th><th style='{th}'>Expiry</th>"
+         f"<th style='{th}'>Lots</th><th style='{th}'>Δ-equiv</th>"
+         f"<th style='{th}'>1σ $</th><th style='{th}'>VaR 95%</th>"
+         f"<th style='{th}'>VaR 99%</th><th style='{th}'>obs</th></tr>")
+    b = ""
+    for (sym, mkt, right, K, exp, qty, de, sign, v1, v95, v99, nobs) in ors["rows"]:
+        _f = lambda v: f"${v:,.0f}" if v is not None else "—"
+        sc = _pnl_color(sign)
+        b += (f"<tr><td style='{td_l}'><b>{sym}</b></td>"
+              f"<td style='{td_l}'>{mkt}</td>"
+              f"<td style='{td}'>{K:g}{right.lower()}</td>"
+              f"<td style='{td}'>{exp}</td><td style='{td}'>{qty:+,.0f}</td>"
+              f"<td style='{td};color:{sc}'>{de}</td>"
+              f"<td style='{td}'>{_f(v1)}</td>"
+              f"<td style='{td};font-weight:700'>{_f(v95)}</td>"
+              f"<td style='{td}'>{_f(v99)}</td>"
+              f"<td style='{td};color:#64748B'>{nobs or '—'}</td></tr>")
+    tot = ors.get("total")
+    if tot:
+        b += (f"<tr><td style='{tf_l}' colspan='6'>Options book — summed daily "
+              f"vectors ({tot['n']} days, cross-option correlation exact)</td>"
+              f"<td style='{tf}'>${tot['sigma']:,.0f}</td>"
+              f"<td style='{tf}'>${tot['v95']:,.0f}</td>"
+              f"<td style='{tf}'>${tot['v99']:,.0f}</td><td style='{tf}'></td></tr>")
+    note = ("<div style='font-size:10px;color:#94A3B8;padding:3px 2px'>"
+            "Priced off the same settlement surfaces as the Pricer tab. "
+            + ("<b>Δ-equiv</b> = delta × lots × mult (× DV01 → $/bp for rates); "
+               "1σ = Δ-equiv × underlying vol / √256 (manual ⚙ ivol if saved "
+               "for the underlying, else the leg's fitted surface IV) — linear, "
+               "understates gamma near strikes/expiry." if ors["mode"] == "delta" else
+               "Each structure repriced under the last ~250 daily underlying moves "
+               "(sticky per-leg IVs, T fixed) — VaR from the P&L percentiles, gamma "
+               "exact. <b>Vega risk is NOT included.</b>")
+            + " These positions also enter the diversified √(vᵀRv) report above "
+              "via their underlying's proxy.</div>")
+    return (f"<div style='overflow-x:auto'><b style='font-size:12px'>Options VaR — "
+            f"{lbl}</b>"
+            f"<table style='border-collapse:collapse;width:100%;font-family:monospace'>"
+            f"<thead>{h}</thead><tbody>{b}</tbody></table>{note}</div>")
 
 
 def _win_var_html(res: dict) -> str:
@@ -2172,11 +2285,19 @@ def render_risk():
 
     # ── Manual Product / Implied Vol / Proxy inputs ──────────────────────────
     if not book.empty or not fx.empty:
-        # Open by default only until a VaR result exists — a hardcoded expanded=True made
-        # the box pop back open on every Run-VaR rerun (the report sections appearing
-        # below re-mount the element tree, resetting client-side expander state).
+        # Auto-open ONLY for an unconfigured book (no saved vols yet). Anything
+        # dynamic here is a trap: the fragment re-mounts this element on every
+        # in-tab button click, discarding the user's manual open/closed state
+        # in favour of this default — and on the Run-VaR click-rerun the old
+        # "_risk_var_result not in ss" check was still True (the result is
+        # only stored BELOW, later in the same run), so the box jumped open
+        # even when manually closed (Rajat 2026-08-20). ss["_risk_run_var"]
+        # is the Run button's own key — True during its click-rerun.
+        _iv_exp_default = (not eff_ivols
+                           and "_risk_var_result" not in st.session_state
+                           and not st.session_state.get("_risk_run_var"))
         with st.expander("⚙️  Set Product, Implied Vol & Proxy (manual)",
-                         expanded=("_risk_var_result" not in st.session_state)):
+                         expanded=_iv_exp_default):
             st.caption("**Implied Vol** — Rates → annualized **normal** vol in **bps** (66 = 66 bp/yr); "
                        "FX / Equities / Commod → **% annual** vol (5 = 5%).  ·  "
                        "**Proxy** — the asset used for the correlation / diversification calc "
@@ -2215,16 +2336,42 @@ def render_risk():
                 _px[name] = xval
 
             _shown = False
+            _done = set()          # every _iv_row name rendered — a name may
+            _opt_unds = {}         # reach us via several paths; render ONCE
             if not book.empty:
                 _u = book["Underlying"].values if "Underlying" in book.columns else [""] * len(book)
-                for s, u in zip(book["Symbol"].values, _u):
-                    if s in eff_fut:                       # only saved-selection instruments
-                        _iv_row(s, _guess_product(s, u))
-                        _shown = True
+                _io = (book["is_option"].fillna(False).values
+                       if "is_option" in book.columns else [False] * len(book))
+                # options collapse to their UNIQUE UNDERLYINGS (Rajat
+                # 2026-08-24: "ESU6 P7600 / P7500 → just ask for ESU6") —
+                # risk_options looks vols/proxies up by underlying symbol
+                for s, u, io_ in zip(book["Symbol"].values, _u, _io):
+                    if s not in eff_fut:
+                        continue
+                    if bool(io_):
+                        und = str(u or "").strip()
+                        if und:
+                            _opt_unds.setdefault(und, _guess_product(und, und))
+                        continue
+                    _iv_row(s, _guess_product(s, u))
+                    _done.add(s)
+                    _shown = True
+                # FX-cash rows render below under the same name (e.g. an option
+                # on the EUR future ↔ the EUR cash-balance row — same EUR/USD
+                # vol): let the FX row be the single source, skip the dup here
+                _fx_names = (set(fx["Currency"]) & set(eff_fx)
+                             if not fx.empty else set())
+                for und, prod_ in _opt_unds.items():
+                    if und in _done or und in _fx_names:
+                        continue
+                    _iv_row(und, prod_)
+                    _done.add(und)
+                    _shown = True
             if not fx.empty:
                 for c_ in fx["Currency"].values:
-                    if c_ in eff_fx:
+                    if c_ in eff_fx and c_ not in _done:
                         _iv_row(c_, "FX", ccy=c_)
+                        _done.add(c_)
                         _shown = True
             if not _shown:
                 st.caption("No positions in the saved selection yet — tick ✓ in the tables below "
@@ -2234,9 +2381,20 @@ def render_risk():
             st.session_state["_risk_pending_proxies"] = _px
 
     # ── Diversified VaR — runs ONLY on button click (not on page load) ────────
-    if st.button("🎲  Run VaR Risk", key="_risk_run_var",
-                 help="Estimate correlation-adjusted portfolio VaR across 1m/3m/6m/1y windows. "
-                      "Fetches proxy history from yfinance/FRED — runs only when clicked."):
+    _vc1, _vc2, _vcsp = st.columns([1.0, 1.5, 2.0])
+    _opt_mode_lbl = _vc2.selectbox(
+        "Options risk", ["No options risk", "Delta-equivalent mapping",
+                         "Full-revaluation historical VaR"],
+        key="_risk_opt_mode",
+        help="How option positions (FOPs in the book) enter the VaR report. "
+             "Delta-equivalent: delta × lots × mult of the underlying, linear, "
+             "into √(vᵀRv) via the underlying's proxy. Full-reval: each structure "
+             "repriced under ~250 historical daily underlying moves (sticky IV) — "
+             "gamma-exact percentile VaR; vol risk not included in either.")
+    _vc1.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
+    if _vc1.button("🎲  Run VaR Risk", key="_risk_run_var",
+                   help="Estimate correlation-adjusted portfolio VaR across 1m/3m/6m/1y windows. "
+                        "Fetches proxy history from yfinance/FRED — runs only when clicked."):
         _rprod, _rprox = {}, {}
         if not book.empty:
             _uu = book["Underlying"].values if "Underlying" in book.columns else [""] * len(book)
@@ -2253,12 +2411,35 @@ def render_risk():
             _fred = st.secrets.get("FRED_KEY")
         except Exception:
             _fred = None
+        _mode_key = {"Delta-equivalent mapping": "delta",
+                     "Full-revaluation historical VaR": "reval"}.get(_opt_mode_lbl)
+        _ors = None
+        if _mode_key:
+            import risk_options
+            with st.spinner("Pricing options off settlement surfaces…"):
+                try:
+                    _ors = risk_options.compute(book, _mode_key, eff_products,
+                                                eff_ivols, eff_proxies, _fred,
+                                                sel=set(eff_fut))
+                except Exception as _oe:
+                    st.error(f"⛔ Options risk failed ({type(_oe).__name__}: {_oe}) "
+                             "— this run is FUTURES/FX ONLY, same as No-options.")
+        st.session_state["_risk_opt_stamp"] = (
+            f"options mode: **{_opt_mode_lbl}** · "
+            + (f"{len(_ors['extra_pos'])} option row(s) in √(vᵀRv) "
+               f"(engine v{risk_options._BUILD})" if _ors else "0 option rows")
+            )
+        st.session_state["_risk_opt_var"] = _ors
         with st.spinner("Fetching proxy history & computing diversified VaR…"):
             st.session_state["_risk_var_result"] = risk_div.compute(
-                book, fx, set(eff_fut), set(eff_fx), _rprod, eff_ivols, _rprox, _fred)
+                book, fx, set(eff_fut), set(eff_fx), _rprod, eff_ivols, _rprox, _fred,
+                extra_pos=(_ors or {}).get("extra_pos"))
 
     _vres = st.session_state.get("_risk_var_result")
     if _vres and _vres.get("windows"):
+        _stamp = st.session_state.get("_risk_opt_stamp")
+        if _stamp:
+            st.caption(_stamp)
         st.markdown(_win_var_html(_vres), unsafe_allow_html=True)
         # ── VaR by asset class — window-selectable (default 1y) ──────────────
         _acw = _vres.get("by_asset_class_windows", {})
@@ -2269,8 +2450,51 @@ def render_risk():
                 index=_wopts.index("1y") if "1y" in _wopts else len(_wopts) - 1,
                 horizontal=True, key="_risk_ac_window")
             st.markdown(_ac_var_html(_vres, _wsel), unsafe_allow_html=True)
+        # ── Net delta risk by asset class × underlying (Rajat 2026-08-24) ────
+        import risk_options as _rop
+        _split: dict = {}
+
+        def _sp_add(cls, key, i, v):
+            _split.setdefault(cls, {}).setdefault(key, [0.0, 0.0])[i] += v
+        if not book.empty:
+            for _, _r in book[book["Symbol"].isin(eff_fut)].iterrows():
+                if bool(_r.get("is_option")):
+                    continue                       # options via _ors exposures
+                _sym = _r["Symbol"]
+                _prod = (eff_products.get(_sym)
+                         or _guess_product(_sym, _r.get("Underlying", "")))
+                # rates: per contract (SR3M6, SR3U6, …); rest: complex (ES…)
+                _key = (_rop.underlying_contract(_sym) if _prod == "Rates"
+                        else _rop.underlying_key(_sym))
+                if _prod == "Rates":
+                    _v = (float(_r["Quantity"]) * float(_r.get("Multiplier") or 0.0)
+                          * 0.01 * float(_r.get("FXRateToBase") or 1.0))
+                else:
+                    _v = float(_r["position_value_base"])
+                _sp_add(_prod, _key, 0, _v)
+        if not fx.empty:
+            for _, _r in fx[fx["Currency"].isin(eff_fx)].iterrows():
+                if pd.notna(_r["USD_exposure"]):
+                    _sp_add("FX", _r["Currency"], 0, float(_r["USD_exposure"]))
+        _ors_e = st.session_state.get("_risk_opt_var")
+        for _cls, _key, _v in ((_ors_e or {}).get("exposures") or []):
+            _sp_add(_cls, _key, 1, _v)
+        if _split:
+            st.markdown("<div style='height:10px'></div>"
+                        + _net_split_html(_split), unsafe_allow_html=True)
         st.markdown("<div style='height:10px'></div>" + _pos_var_html(_vres),
                     unsafe_allow_html=True)
+        _ors = st.session_state.get("_risk_opt_var")
+        if _ors and (_ors["rows"] or _ors["notes"]):
+            if not _ors["extra_pos"]:
+                st.warning("⚠️ An options mode was selected but **no option "
+                           "contributed to the VaR above** — every position was "
+                           "skipped (reasons below). The report equals the "
+                           "no-options run.")
+            st.markdown("<div style='height:10px'></div>" + _opt_var_html(_ors),
+                        unsafe_allow_html=True)
+            if _ors["notes"]:
+                st.caption("Options skipped/warnings: " + " · ".join(_ors["notes"]))
         _m = _vres.get("meta", {})
         _note = (f"Correlations from proxy returns over **{_m.get('n_days','?')}** aligned days "
                  f"({_m.get('hist_start','?')} → {_m.get('hist_end','?')}). "
@@ -2324,7 +2548,13 @@ def render_risk():
         fx_start, fx_end = fx_activity_span()
         span_txt = (f"{fx_start} → {fx_end}" if fx_start else "unknown range")
         fc = st.columns(4)
-        fc[0].metric("Net FX exposure (USD)", f"${exp.sum():,.0f}")
+        # sign flipped vs the per-ccy rows: short foreign ccys ⇒ LONG USD
+        _usd_pos = -exp.sum()
+        fc[0].metric("Net USD position",
+                     f"{'+' if _usd_pos >= 0 else '−'}${abs(_usd_pos):,.0f}",
+                     help="−(sum of non-USD exposures): + = net long USD, "
+                          "− = net short USD. Per-ccy rows below keep their "
+                          "own sign (− = short that ccy).")
         fc[1].metric("Gross FX exposure (USD)", f"${exp.abs().sum():,.0f}")
         fc[2].metric("Today FX PnL (MTM)", f"${today.sum():,.0f}" if len(today) else "—",
                      help="Mark-to-market: FX exposure × (live rate − prior session close), per currency.")

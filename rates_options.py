@@ -52,6 +52,11 @@ _DISK_CACHE_DIR = os.path.join(os.path.dirname(__file__), "rates_options_cache")
 # structural difference, not just a different deliverable window).
 # curve: which par-curve fetcher seeds the default yield/coupon ("us" or "eur").
 _MARKETS_RATES = {
+    # 2Y note (CME/IBKR root ZT, BBG TU — internal keys are bbg-style).
+    # NB $200k face (not 100k): 1pt = $2,000 — pricer._MULT carries that.
+    "TU": {"label": "2Y US Note (TU)",  "opt_sym": "OZT.OPT",  "fut_sym": "ZT.FUT",
+           "ds": _CME,  "r": 0.045, "needs_ctd": True, "freq": 2, "curve": "us",
+           "deliverable_window": (1.75, 2.0), "ctd_years": 1.79, "yf_fallback": "ZT=F"},
     "TY": {"label": "10Y US Note (TY)", "opt_sym": "OZN.OPT",  "fut_sym": "ZN.FUT",
            "ds": _CME,  "r": 0.045, "needs_ctd": True, "freq": 2, "curve": "us",
            "deliverable_window": (6.5, 8.0), "ctd_years": 7.25, "yf_fallback": "ZN=F"},
@@ -136,7 +141,7 @@ _MARKETS_RATES = {
 
 _YF_FALLBACK_RATES = {k: v["yf_fallback"] for k, v in _MARKETS_RATES.items() if v.get("yf_fallback")}
 
-_BOND_FUTURE_MARKETS = ["FV", "TY", "UB", "DU", "OE", "RX", "UX"]
+_BOND_FUTURE_MARKETS = ["TU", "FV", "TY", "UB", "DU", "OE", "RX", "UX"]
 # Front + 1y/2y midcurve for each of the three money-market complexes, in the
 # column/selector order the user specified.
 _MONEY_MKT_MARKETS   = ["SOFR", "SOFR_1Y", "SOFR_2Y",

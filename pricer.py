@@ -16,6 +16,7 @@ import math
 import re
 from datetime import date
 
+import numpy as np
 import streamlit as st
 
 import options_v2 as _ov2
@@ -32,14 +33,16 @@ _MULT = {
     # FX (per 1.0 move in USD-per-unit quote)
     "EUR": 125000, "GBP": 62500, "JPY": 12500000, "AUD": 100000,
     "CAD": 100000, "CHF": 125000, "MXN": 500000, "NZD": 100000,
-    # bonds ($/pt per 100k face; Eurex €/pt)
-    "FV": 1000, "TY": 1000, "US": 1000, "UB": 1000, "OE": 1000, "RX": 1000,
+    # bonds ($/pt per 100k face; Eurex €/pt) — NB Buxl = "UX", Schatz = "DU"
+    "FV": 1000, "TY": 1000, "US": 1000, "UB": 1000,
+    "DU": 1000, "OE": 1000, "RX": 1000, "UX": 1000,
+    "TU": 2000,   # 2Y note (ZT): $200k face → $2,000/pt, unlike the rest
     # STIRs ($/€/£ 2500 per 1.00 price pt = 25/bp)
     "SOFR": 2500, "SOFR_1Y": 2500, "SOFR_2Y": 2500,
     "ER": 2500, "ER_1Y": 2500, "ER_2Y": 2500,
     "SONIA": 2500, "SONIA_1Y": 2500, "SONIA_2Y": 2500,
 }
-_EUR_CCY = {"ESTX", "DAX", "OE", "RX", "ER", "ER_1Y", "ER_2Y"}
+_EUR_CCY = {"ESTX", "DAX", "DU", "OE", "RX", "UX", "ER", "ER_1Y", "ER_2Y"}
 _GBP_CCY = {"SONIA", "SONIA_1Y", "SONIA_2Y"}
 
 
@@ -54,7 +57,7 @@ _YF_LIVE = {
     "BTC": "BTC-USD",
     "EUR": "6E=F", "JPY": "6J=F", "GBP": "6B=F", "AUD": "6A=F",
     "CAD": "6C=F", "CHF": "6S=F", "MXN": "6M=F", "NZD": "6N=F",
-    "FV": "ZF=F", "TY": "ZN=F", "US": "ZB=F", "UB": "UB=F",
+    "TU": "ZT=F", "FV": "ZF=F", "TY": "ZN=F", "US": "ZB=F", "UB": "UB=F",
     # OE/RX (Eurex) and STIRs: no yahoo futures — settlement F stands.
 }
 
@@ -90,6 +93,64 @@ def _universe():
             seen.add((src, mkt))
             out.setdefault(cls, []).append((src, mkt, lbl))
     return out
+
+
+# ── Yield-terms display for rates markets (Rajat 2026-08-21) ─────────────────
+# Money-market: exact, price = 100 − rate. Bond futures: model-based (≈) —
+# fwd yld = CTD-maturity par yield (same source as the DV01 estimate),
+# strike yld = fwd yld + (F − K)/DV01 bp. Respects the per-market CTD-box
+# session state from the Rates Options tab, like _get_market_dv01.
+def _yield_disp(src: str, mkt: str, F: float, legs: list, fut: bool):
+    """(fwd_str, strikes_str) in yield terms, or ("—", "—") if not a rates
+    market / no conversion available."""
+    if src != "rates":
+        return "—", "—"
+    m = _ro._MARKETS_RATES.get(mkt) or {}
+    ks = []
+    if not fut:
+        for _q, _cp, k in legs:
+            if k not in ks:
+                ks.append(k)
+    if mkt in _ro._MONEY_MKT_MARKETS:
+        fs = f"{round(100 - F, 4):g}%"
+        return fs, ("/".join(f"{round(100 - k, 4):g}" for k in ks) + "%"
+                    if ks else "—")
+    if not m.get("needs_ctd"):
+        return "—", "—"
+    try:
+        dv01, ok = _vd._market_dv01(mkt, m)
+        if not (ok and math.isfinite(F)):
+            return "—", "—"
+        cy = st.session_state.get(f"_ro_ctdyrs_{mkt}", m["ctd_years"])
+        dy, _dc = _ro._default_ctd_inputs(cy, curve=m["curve"])
+        fs = f"≈{dy:.2f}%"
+        return fs, ("/".join(f"{dy + (F - k) / dv01 * 0.01:.2f}"
+                             for k in ks) + "%" if ks else "—")
+    except Exception:
+        return "—", "—"
+
+
+# ── Duration display for rates markets (Rajat 2026-08-21) ────────────────────
+# Bond futures: CTD modified duration from the same _estimate_dv01 machinery
+# (respects the Rates-tab CTD-maturity box; NB if a DV01 was typed directly
+# in that box, this still shows the estimated-CTD duration). Money-market:
+# 0.25y — the underlying is always a 3M rate future, midcurves included.
+def _dur_disp(src: str, mkt: str) -> str:
+    if src != "rates":
+        return "—"
+    m = _ro._MARKETS_RATES.get(mkt) or {}
+    if "fixed_dv01" in m:
+        return "0.25y"
+    if not m.get("needs_ctd"):
+        return "—"
+    try:
+        cy = st.session_state.get(f"_ro_ctdyrs_{mkt}", m["ctd_years"])
+        dy, dc = _ro._default_ctd_inputs(cy, curve=m["curve"])
+        _p, mod_dur, _cf, _dv = _ro._estimate_dv01(dc / 100, dy / 100, cy,
+                                                   freq=m["freq"])
+        return f"{mod_dur:.1f}y" if math.isfinite(mod_dur) else "—"
+    except Exception:
+        return "—"
 
 
 # ── NLP description parser ────────────────────────────────────────────────────
@@ -209,6 +270,22 @@ _WEEKLY_DEF_ROOTS = {
     # Nasdaq same scheme with Q roots
     "NQ": (["QNE", "QN1", "QN2", "QN3", "QN4"]
            + [f"Q{i}{s}" for i in range(1, 6) for s in "ABCD"]),
+    # FX weeklies = daily coverage where listed (every root verified against
+    # its 6X underlying via a defs probe 2026-08-24 — several lookalike roots
+    # are NOT FX: MC=micro-crude, WB/WF=treasury, 3CA=corn, SN=soybeans).
+    # Scheme: Mon/Tue/Wed/Thu prefix+pair-letter ×1-5, Fri = week#+pair code.
+    # CAD lists no Tuesday; CHF is Friday-only; MXN/NZD have no weeklies.
+    "EUR": ([f"{p}{i}" for p in ("MO", "TU", "WE", "SU") for i in range(1, 6)]
+            + [f"{i}EU" for i in range(1, 6)]),
+    "JPY": ([f"{p}{i}" for p in ("MJ", "TJ", "WJ", "SJ") for i in range(1, 6)]
+            + [f"{i}JY" for i in range(1, 6)]),
+    "GBP": ([f"{p}{i}" for p in ("MB", "TG", "WG", "SB") for i in range(1, 6)]
+            + [f"{i}BP" for i in range(1, 6)]),
+    "AUD": ([f"{p}{i}" for p in ("MA", "TA", "WA", "SA") for i in range(1, 6)]
+            + [f"{i}AD" for i in range(1, 6)]),
+    "CAD": ([f"{p}{i}" for p in ("MD", "WD", "SD") for i in range(1, 6)]
+            + [f"{i}CD" for i in range(1, 6)]),
+    "CHF": [f"{i}SF" for i in range(1, 6)],
 }
 
 
@@ -260,7 +337,7 @@ def _wk_fetch(mkt: str, roots: list, tdate: str, fp: str) -> None:
 # Nasdaq, Rates and STIR". STIRs need no extra roots (SR3/ER/SO3 defs already
 # carry every serial/quarterly/midcurve expiry); the library below warms the
 # extra-roots markets in ONE background thread when the Pricer opens.
-_WK_WARM_MKTS = [("v2", "ES"), ("v2", "NQ"),
+_WK_WARM_MKTS = [("v2", "ES"), ("v2", "NQ"), ("v2", "EUR"),
                  ("rates", "TY"), ("rates", "FV"), ("rates", "US"), ("rates", "UB")]
 
 
@@ -527,6 +604,7 @@ def price_structure(src: str, mkt: str, expiry: date, legs: list, lots: int,
         delta_unit = "/pt"
     return {
         "err": None, "F": F, "T": T, "r": r, "tdate": tdate, "mult": mult,
+        "dv01": dv01,                     # underlying future, pts per bp
         "interp": bool(interp), "live": is_live, "f_settle": F_set,
         "legs": leg_rows,
         "atm_disp": atm_disp,
@@ -570,7 +648,8 @@ def price_future(src: str, mkt: str, lots: int, live: bool = True):
     else:
         delta_usd, unit = mult * lots, "/pt"
     return {"err": None, "F": F, "T": None, "r": None, "tdate": tdate,
-            "mult": mult, "interp": False, "live": is_live, "f_settle": F_set,
+            "mult": mult, "dv01": dv01, "interp": False, "live": is_live,
+            "f_settle": F_set,
             "legs": [], "atm_disp": "—", "prem_pts": 0.0, "prem_usd": 0.0,
             "delta_pct": None, "delta_usd": delta_usd, "delta_unit": unit,
             "theta_usd": 0.0, "vega_usd": 0.0}
@@ -609,8 +688,8 @@ def _render_scenario(b: dict) -> None:
                 else F0 * iv_ref * math.sqrt(T0))    # 1σ move to expiry, pts
 
     st.markdown(
-        "<div style='background:#1E293B;color:#F8FAFC;padding:6px 12px;"
-        "font-size:13px;font-weight:700;border-radius:6px;display:inline-block;"
+        "<div style='background:#5B4FC7;color:#FFFFFF;padding:6px 12px;"
+        "font-size:13px;font-weight:700;border-radius:9px;display:inline-block;"
         f"margin-top:10px'>🎬 Scenario — {b['mlbl']} · {b['exp']} · "
         f"{lots} lots · {b['desc']}</div>", unsafe_allow_html=True)
 
@@ -742,16 +821,6 @@ def _fmt_money(v):
     return f"−${abs(v):,.0f}" if v < 0 else f"${v:,.0f}"
 
 
-def _chip(lbl: str, val: str) -> str:
-    _c = "#DC2626" if (isinstance(val, str) and val.startswith("−")) else "#0F172A"
-    return (f"<span style='display:inline-block;padding:3px 12px;"
-            f"margin-right:10px;border-radius:6px;background:#F1F5F9;"
-            f"font-size:12px'><span style='color:#64748B;font-size:10.5px;"
-            f"text-transform:uppercase;letter-spacing:.05em'>{lbl}</span>"
-            f"&nbsp;&nbsp;<b style='font-family:monospace;color:{_c}'>{val}"
-            f"</b></span>")
-
-
 _LINE_COLS = [0.72, 0.9, 1.35, 1.3, 0.52, 1.9, 0.26]
 
 
@@ -759,30 +828,59 @@ _LINE_COLS = [0.72, 0.9, 1.35, 1.3, 0.52, 1.9, 0.26]
 # like a portfolio"). The CURRENT lines are the portfolio — 💾 saves them all
 # under a name (same name = overwrite), ↺ Load replaces the lines by
 # pre-seeding the widget keys. pricer_linesets.json. ─────────────────────────
-def _ls_fp() -> str:
+def _store_fp(name: str) -> str:
     import os
-    return os.path.join(os.path.dirname(__file__), "pricer_linesets.json")
+    return os.path.join(os.path.dirname(__file__), name)
 
 
-def _ls_load() -> list:
+def _store_load(fname: str) -> list:
     import json
     import os
+    fp = _store_fp(fname)
     try:
-        if os.path.exists(_ls_fp()):
-            with open(_ls_fp(), "r", encoding="utf-8") as fh:
+        if os.path.exists(fp):
+            with open(fp, "r", encoding="utf-8") as fh:
                 return json.load(fh)
     except Exception:
         pass
     return []
 
 
-def _ls_write(items: list) -> None:
+def _store_write(fname: str, items: list) -> None:
     import json
     try:
-        with open(_ls_fp(), "w", encoding="utf-8") as fh:
+        with open(_store_fp(fname), "w", encoding="utf-8") as fh:
             json.dump(items, fh, indent=1)
     except Exception:
         pass
+
+
+# TWO stores (Rajat 2026-08-19: "there will be 2 databases"):
+#   portfolios — curated, generally same-asset-class views (Add ticked)
+#   blotters   — ad-hoc dated snapshots of the whole screen (Save blotter)
+def _ls_load() -> list:
+    return _store_load("pricer_linesets.json")
+
+
+def _ls_write(items: list) -> None:
+    _store_write("pricer_linesets.json", items)
+
+
+def _bl_load() -> list:
+    # one-time migration: auto-named "blotter …" entries saved into the
+    # portfolios store before the split move over here
+    bl = _store_load("pricer_blotters.json")
+    ls = _ls_load()
+    strays = [s for s in ls if s.get("name", "").startswith("blotter ")]
+    if strays:
+        bl.extend(strays)
+        _store_write("pricer_blotters.json", bl)
+        _ls_write([s for s in ls if not s.get("name", "").startswith("blotter ")])
+    return bl
+
+
+def _bl_write(items: list) -> None:
+    _store_write("pricer_blotters.json", items)
 
 
 def _ls_apply(ls: dict, uni: dict):
@@ -791,6 +889,11 @@ def _ls_apply(ls: dict, uni: dict):
     import uuid as _uuid
     from datetime import timedelta
     ss = st.session_state
+    # restore the daily/weekly-expiries toggle the set was saved with
+    # (pending-key deferral — the checkbox is instantiated above the Load
+    # buttons, so its key can't be written directly here)
+    if "show_all" in ls:
+        ss["_pr_showall_pend"] = bool(ls["show_all"])
     stubs, notes = [], []
     for ln in ls.get("lines", []):
         cls = ln.get("cls")
@@ -806,20 +909,22 @@ def _ls_apply(ls: dict, uni: dict):
         ss[f"_prl_c_{lid}"] = cls
         ss[f"_prl_m_{lid}_{cls}"] = j
         ss[f"_prl_l_{lid}"] = int(ln.get("lots", 1))
+        stub = {"id": lid}
         if ln.get("kind") != "fut":
             ss[f"_prl_d_{lid}"] = ln.get("desc", "")
             if ln.get("exp"):
                 d = date.fromisoformat(ln["exp"])
                 if date.today() < d <= date.today() + timedelta(days=400):
-                    # seed via the custom-date path — always valid regardless
-                    # of the daily/weekly toggle (≈ interp == direct at listed
-                    # expiries to 1e-5, verified 2026-08-04)
-                    ss[f"_prl_e_{lid}_{ln['mkt']}"] = "custom date ≈"
-                    ss[f"_prl_ecd_{lid}"] = d
+                    # hand the date to _render_line, which picks it in the
+                    # expiry DROPDOWN when it's a listed expiry and only
+                    # falls back to the custom-date path for non-listed
+                    # dates (Rajat 2026-08-19: a listed Bund expiry showed
+                    # as "custom date" — confusing)
+                    stub["seed_exp"] = ln["exp"]
                 else:
                     notes.append(f"{ln['mkt']} {ln.get('desc', '')}: expiry "
                                  f"{ln['exp']} passed — pick a new one")
-        stubs.append({"id": lid})
+        stubs.append(stub)
     return stubs, notes
 
 
@@ -887,6 +992,25 @@ def _render_line(i: int, ln: dict, uni: dict, use_live: bool,
                 return (f"{x} ({(x - date.today()).days}d)"
                         + ("" if x in has_data else " ≈"))
 
+            # one-shot expiry seed from a portfolio/blotter load: pick the
+            # saved date in the dropdown when listed, custom path otherwise
+            _seed = ln.pop("seed_exp", None)
+            if _seed:
+                _sd = date.fromisoformat(_seed)
+                _ekey = f"_prl_e_{lid}_{mkt}"
+                _wk_seed = ([] if show_all else
+                            _weekly_expiries(src, mkt, tdate))
+                if _sd in exps:
+                    st.session_state[_ekey] = _sd
+                elif _sd in all_exps or _sd in _wk_seed:
+                    # listed (or a known daily/weekly) but hidden by the
+                    # toggle → keep it a dropdown date, never "custom"
+                    st.session_state[_ekey] = _sd
+                    exps = sorted(set(exps) | {_sd})
+                else:
+                    st.session_state[_ekey] = "custom date ≈"
+                    st.session_state[f"_prl_ecd_{lid}"] = _sd
+
             exp_sel = c[3].selectbox("Expiry", exps + ["custom date ≈"],
                                      key=f"_prl_e_{lid}_{mkt}",
                                      format_func=_efmt, label_visibility=lv)
@@ -925,14 +1049,17 @@ def _render_line(i: int, ln: dict, uni: dict, use_live: bool,
 
 def render_pricer():
     import uuid as _uuid
-    import pandas as pd
+    # Indigo-Studio identity (Rajat 2026-08-19: E+F blend from the design board)
     st.markdown(
-        "<div style='background:#1E293B;color:#F8FAFC;padding:8px 14px;"
-        "font-size:15px;font-weight:700;border-radius:6px;display:inline-block;"
-        "margin-bottom:6px'>💲 Pricer"
-        "&nbsp;&nbsp;<span style='font-weight:400;font-size:11px;color:#94A3B8'>"
-        "line pricer · settlement vol surfaces · live forwards</span>"
-        "</div>", unsafe_allow_html=True)
+        "<div style='display:inline-flex;align-items:center;gap:10px;"
+        "margin-bottom:6px'>"
+        "<span style='background:#5B4FC7;color:#FFFFFF;border-radius:9px;"
+        "width:32px;height:32px;display:inline-flex;align-items:center;"
+        "justify-content:center;font-size:15px'>💲</span>"
+        "<span style='font-size:16.5px;font-weight:700;color:#191731'>Pricer</span>"
+        "<span style='font-family:ui-monospace,Consolas,monospace;font-size:11px;"
+        "color:#6E6A8F'>line pricer · settlement vol surfaces · live forwards"
+        "</span></div>", unsafe_allow_html=True)
     # warm the weekly-dates library once per session-day (background, defs-only)
     _warm_key = f"_pr_wk_warm_{date.today().isoformat()}"
     if not st.session_state.get(_warm_key):
@@ -945,21 +1072,34 @@ def render_pricer():
     if not lines:
         lines.append({"id": _uuid.uuid4().hex[:6]})
 
-    t1, t2, t3, t4 = st.columns([0.9, 1.0, 0.9, 3.6])
+    t1, t2, t3, t5, t4 = st.columns([0.9, 1.0, 0.9, 1.1, 2.5])
+    # NB no st.rerun() in these toolbar handlers: an early rerun aborts the
+    # script BEFORE the line widgets below render, and Streamlit culls the
+    # state of un-rendered widgets — every line was resetting to defaults
+    # ("lines become S&P 500", Rajat 2026-08-19). The click itself is
+    # already a fresh run; mutations here are picked up by the loop below.
     if t1.button("➕ Add line", type="primary", key="_pr_addline"):
         lines.append({"id": _uuid.uuid4().hex[:6]})
-        st.rerun()
     if t2.button("🔄 Refresh live", key="_pr_refresh",
                  help="clears the live-quote cache; all lines reprice"):
         _live_shift.clear()
-        st.rerun()
     if t3.button("🗑 Clear lines", key="_pr_clearlines"):
         st.session_state["_pr_lines"] = []
         st.session_state.pop("_pr_scn", None)
         st.rerun()
+    with t5.popover("💾 Save blotter", use_container_width=True):
+        st.caption("saves ALL currently priced lines, as-is, under a name "
+                   "(same name = overwrite); load it back from the "
+                   "Portfolios row below")
+        _blot_nm = st.text_input("Name", key="_pr_blot_nm",
+                                 placeholder="blank = auto-dated name")
+        _blot_go = st.button("Save", key="_pr_blot_go", type="primary")
     use_live = t4.checkbox(
         "live underlying (yahoo, ~15min delay) — settlement vols, live forward",
         value=True, key="_pr_live")
+    _sa_pend = st.session_state.pop("_pr_showall_pend", None)
+    if _sa_pend is not None:
+        st.session_state["_pr_showall"] = bool(_sa_pend)
     show_all = t4.checkbox(
         "include daily/weekly expiries", value=False, key="_pr_showall",
         help="adds every listed expiry incl. dailies/weeklies to the expiry "
@@ -969,12 +1109,28 @@ def render_pricer():
         st.markdown(_STRUCTS_HELP)
 
     # ── the lines ─────────────────────────────────────────────────────────────
+    # scoped restyle (Rajat 2026-08-19: line dropdowns' font clashed with the
+    # table) — st.container(key=) stamps .st-key-pr_lines on this block only,
+    # so the CSS can't leak into other tabs' widgets
+    st.markdown(
+        "<style>"
+        ".st-key-pr_lines div[data-baseweb='select'] > div"
+        "{font-size:12.5px;min-height:34px;}"
+        ".st-key-pr_lines .stTextInput input,"
+        ".st-key-pr_lines .stNumberInput input,"
+        ".st-key-pr_lines .stDateInput input{font-size:12.5px;}"
+        ".st-key-pr_lines [data-testid='stWidgetLabel'] p"
+        "{font-size:10px;font-family:ui-monospace,Consolas,monospace;"
+        "text-transform:uppercase;letter-spacing:.07em;color:#5B4FC7;"
+        "font-weight:600;}"
+        "</style>", unsafe_allow_html=True)
     entries, rm_id = [], None
-    for i, ln in enumerate(lines):
-        entry, rm = _render_line(i, ln, uni, use_live, show_all)
-        if rm:
-            rm_id = ln["id"]
-        entries.append(entry)
+    with st.container(key="pr_lines"):
+        for i, ln in enumerate(lines):
+            entry, rm = _render_line(i, ln, uni, use_live, show_all)
+            if rm:
+                rm_id = ln["id"]
+            entries.append(entry)
     if rm_id is not None:
         st.session_state["_pr_lines"] = [l for l in lines if l["id"] != rm_id]
         st.rerun()
@@ -986,14 +1142,14 @@ def render_pricer():
         if e.get("pending"):
             rows.append({"#": e["line"], "Market": e["mlbl"],
                          "Structure": "· enter a description ·",
-                         "Expiry": "", "Lots": "", "Fwd": "", "ATM": "",
+                         "Expiry": "", "Days": "", "Lots": "", "Fwd": "", "ATM": "",
                          "Prem pts": "", "Prem $": "", "Δ %": "", "Δ $": "",
                          "θ $/d": "", "Vega $": ""})
             continue
         if e.get("err") or not r_:
             rows.append({"#": e["line"], "Market": e["mlbl"],
                          "Structure": f"⚠ {e.get('err', 'no result')}",
-                         "Expiry": "", "Lots": "", "Fwd": "", "ATM": "",
+                         "Expiry": "", "Days": "", "Lots": "", "Fwd": "", "ATM": "",
                          "Prem pts": "", "Prem $": "", "Δ %": "", "Δ $": "",
                          "θ $/d": "", "Vega $": ""})
             continue
@@ -1006,43 +1162,172 @@ def render_pricer():
                 f"@{r_['legs'][j]['iv'] * (1 if e['src'] == 'rates' else 100):.2f}"
                 for j, (q, cp, k) in enumerate(e["legs"]))
             _stru = f"{e['desc']}  [{_lg}]"
+        def _wcls(v):
+            # signal-wash class (design board variant E): teal = positive,
+            # terracotta = negative risk; grey for zero/absent
+            if v is None or not math.isfinite(v) or v == 0:
+                return "w0"
+            return "wp" if v > 0 else "wn"
+        _fyld, _kyld = _yield_disp(e["src"], e["mkt"], r_["F"],
+                                   e.get("legs") or [], fut)
         rows.append({
             "#": e["line"], "Market": e["mlbl"],
             "Expiry": ("—" if fut else
                        f"{e['exp']}{' ≈' if r_.get('interp') else ''}"),
+            "Days": "—" if fut else (e["exp"] - date.today()).days,
             "Lots": e["lots"], "Structure": _stru,
             "Fwd": (f"{_vd._strike_fmt(r_['F'])}"
                     + (" (live)" if r_.get("live") else " (settle)")),
+            "Fwd yld": _fyld,
+            "K yld": _kyld,
+            # underlying future's DV01 in ccy/bp PER CONTRACT (pts/bp ×
+            # mult) — position-level $/bp is already the Δ $ column
+            "DV01": (_fmt_money(r_["dv01"] * r_["mult"])
+                     if r_.get("dv01") else "—"),
+            "Dur": _dur_disp(e["src"], e["mkt"]),
             "ATM": "—" if fut else r_.get("atm_disp", "—"),
-            "Prem pts": "—" if fut else f"{r_['prem_pts']:.4g}",
+            # FX premium in cents (price pts × 100, e.g. 6E 0.0085 → 0.85¢)
+            # — points are unreadable at FX quote scale (Rajat 2026-08-21)
+            "Prem pts": ("—" if fut else
+                         (f"{r_['prem_pts'] * 100:.4g}¢"
+                          if e.get("cls") == "FX"
+                          else f"{r_['prem_pts']:.4g}")),
             "Prem $": "—" if fut else _fmt_money(r_["prem_usd"]),
+            # tenor-normalized premium: total $ prem / √(trading DAYS to
+            # expiry) — e.g. 20 busdays → prem/√20 — for comparing
+            # structures across expiries on the Risk/VaR daily-vol clock
+            # (daily = annual/√256). NOT the BS calendar/365 T.
+            "Prem $/√T": ("—" if fut else _fmt_money(
+                r_["prem_usd"] / math.sqrt(
+                    max(int(np.busday_count(date.today(), e["exp"])), 1)))),
             "Δ %": "—" if fut else f"{r_['delta_pct']:+.1f}",
             "Δ $": f"{_fmt_money(r_['delta_usd'])}{r_.get('delta_unit', '')}",
             "θ $/d": "—" if fut else _fmt_money(r_["theta_usd"]),
             "Vega $": "—" if fut else _fmt_money(r_["vega_usd"]),
+            "_wash": {
+                "Prem $": "w0" if fut else _wcls(r_["prem_usd"]),
+                "Prem $/√T": "w0" if fut else _wcls(r_["prem_usd"]),
+                "Δ $": _wcls(r_["delta_usd"]),
+                "θ $/d": "w0" if fut else _wcls(r_["theta_usd"]),
+                "Vega $": "w0" if fut else _wcls(r_["vega_usd"]),
+            },
         })
-    if rows:
-        st.dataframe(pd.DataFrame(rows), hide_index=True,
-                     use_container_width=True)
-
-    # ── aggregated risk over all priced lines ─────────────────────────────────
+    # ── results table + risk totals: one styled block (E+F blend, Rajat
+    # 2026-08-19 design board — signal-washed greek cells, indigo identity,
+    # segmented stat-bar totals). Rendered via click_table multi-mode so the
+    # ✓ column stays row-aligned AND fully styleable (data_editor can't
+    # colour cells; native checkboxes can't sit inside an HTML table). ───────
     ok = [e["res"] for e in entries if e.get("res") and not e.get("err")]
+    ticked = []
+    if rows:
+        import html as _hesc
+        _COLS = ["#", "Market", "Expiry", "Days", "Lots", "Structure",
+                 "Fwd", "Fwd yld", "K yld", "DV01", "Dur", "ATM",
+                 "Prem pts", "Prem $", "Prem $/√T", "Δ %", "Δ $",
+                 "θ $/d", "Vega $"]
+        _LEFT = {"Market", "Structure"}
+        _css = (
+            "<style>"
+            "body{background:#F4F3FB;margin:0;}"
+            ".card{background:#FFFFFF;border:1px solid #E3E0F2;"
+            "border-radius:12px;padding:10px 12px;overflow-x:auto;"
+            "box-shadow:0 1px 2px rgba(45,40,90,.05),"
+            "0 6px 18px rgba(45,40,90,.06);}"
+            "table{border-collapse:collapse;font-size:12px;width:100%;}"
+            "th{color:#5B4FC7;font-size:10px;text-transform:uppercase;"
+            "letter-spacing:.07em;padding:6px 8px;text-align:right;"
+            "border-bottom:2px solid #5B4FC7;white-space:nowrap;"
+            "font-family:ui-monospace,Consolas,monospace;}"
+            "td{padding:6.5px 8px;border-bottom:1px solid #EFEDF8;"
+            "text-align:right;white-space:nowrap;color:#191731;"
+            "font-family:ui-monospace,Consolas,monospace;"
+            "font-variant-numeric:tabular-nums;}"
+            "th.al,td.al{text-align:left;}"
+            "td.mkt{font-family:system-ui,'Segoe UI',sans-serif;"
+            "font-weight:600;}"
+            "tr:nth-child(even) td{background:#FAF9FE;}"
+            "tr.ct-on td{background:#EFEBFF;}"
+            "tr.ct-on td:first-child{box-shadow:inset 3px 0 0 #5B4FC7;}"
+            "td.sel{cursor:pointer;color:#B9B4D8;font-size:17px;"
+            "line-height:1;text-align:center;width:34px;}"
+            "td.sel.ct-sel{color:#5B4FC7;}"
+            "td.wp{background:#E9F7F5 !important;color:#0F766E;"
+            "font-weight:600;}"
+            "td.wn{background:#FDEFE9 !important;color:#C2410C;"
+            "font-weight:600;}"
+            "td.w0{color:#A6A3C0;}"
+            ".tot{margin-top:10px;display:flex;flex-wrap:wrap;gap:0;"
+            "border:1px solid #E3E0F2;border-radius:10px;overflow:hidden;"
+            "background:#FFFFFF;width:max-content;max-width:100%;}"
+            ".tcell{padding:7px 16px;border-right:1px solid #EFEDF8;}"
+            ".tcell:last-child{border-right:none;}"
+            ".tcell span{display:block;font-size:9px;text-transform:"
+            "uppercase;letter-spacing:.08em;color:#8C88AC;"
+            "font-family:ui-monospace,Consolas,monospace;}"
+            ".tcell b{font-family:ui-monospace,Consolas,monospace;"
+            "font-size:14px;color:#191731;}"
+            ".tcell.p{background:#E9F7F5;}.tcell.p b{color:#0F766E;}"
+            ".tcell.n{background:#FDEFE9;}.tcell.n b{color:#C2410C;}"
+            ".note{margin-top:7px;font-size:10.5px;color:#8C88AC;"
+            "font-family:ui-monospace,Consolas,monospace;}"
+            "</style>")
+        _head = ("<tr><th title='tick lines to add to a portfolio / run "
+                 "the scenario'>✓</th>"
+                 + "".join(f"<th class='al'>{c}</th>" if c in _LEFT
+                           else f"<th>{c}</th>" for c in _COLS) + "</tr>")
+        _trs = []
+        for rw, e in zip(rows, entries):
+            w = rw.get("_wash", {})
+            tds = [f"<td class='sel' data-key='{e['lid']}' data-on='■'>□"
+                   "</td>"]
+            for c in _COLS:
+                v = str(rw.get(c, ""))
+                cls = []
+                if c in _LEFT:
+                    cls.append("al")
+                if c == "Market":
+                    cls.append("mkt")
+                if c in w:
+                    cls.append(w[c])
+                elif v in ("—", ""):
+                    cls.append("w0")
+                tds.append(f"<td class='{' '.join(cls)}'>"
+                           f"{_hesc.escape(v)}</td>")
+            _trs.append("<tr>" + "".join(tds) + "</tr>")
+        _tot = ""
+        if ok:
+            d_pt = sum(r["delta_usd"] for r in ok
+                       if r.get("delta_unit", "/pt") == "/pt")
+            d_bp = sum(r["delta_usd"] for r in ok
+                       if r.get("delta_unit") == "/bp")
+
+            def _tc(lbl, v, sfx=""):
+                cls = " p" if v > 0 else (" n" if v < 0 else "")
+                return (f"<div class='tcell{cls}'><span>{lbl}</span>"
+                        f"<b>{_fmt_money(v)}{sfx}</b></div>")
+            _tot = "<div class='tot'>" + _tc(
+                "net prem", sum(r["prem_usd"] for r in ok))
+            if any(r.get("delta_unit", "/pt") == "/pt" for r in ok):
+                _tot += _tc("Δ eq/fx/cmd", d_pt, "/pt")
+            if any(r.get("delta_unit") == "/bp" for r in ok):
+                _tot += _tc("Δ rates", d_bp, "/bp")
+            _tot += (_tc("θ /day", sum(r["theta_usd"] for r in ok))
+                     + _tc("vega /1pp", sum(r["vega_usd"] for r in ok))
+                     + "</div>")
+            _tot += (f"<div class='note'>{len(ok)}/{len(entries)} "
+                     "line(s) priced</div>")
+        _tbl_html = (_css + "<div class='card'><table>" + _head
+                     + "".join(_trs) + "</table></div>" + _tot)
+        _cur_lids = {e["lid"] for e in entries}
+        _prev_sel = [k for k in (st.session_state.get("_pr_tbl_sel") or [])
+                     if k in _cur_lids]
+        from click_table import click_table as _ctbl
+        _sel = _ctbl(_tbl_html, selected=_prev_sel, key="_pr_tbl_sel",
+                     multi=True)
+        _lid_ix = {e["lid"]: i for i, e in enumerate(entries)}
+        ticked = sorted(_lid_ix[k] for k in (_sel or []) if k in _lid_ix)
+
     if ok:
-        d_pt = sum(r["delta_usd"] for r in ok
-                   if r.get("delta_unit", "/pt") == "/pt")
-        d_bp = sum(r["delta_usd"] for r in ok if r.get("delta_unit") == "/bp")
-        chips = _chip("net prem", _fmt_money(sum(r["prem_usd"] for r in ok)))
-        if any(r.get("delta_unit", "/pt") == "/pt" for r in ok):
-            chips += _chip("Δ eq/fx/cmd", _fmt_money(d_pt) + "/pt")
-        if any(r.get("delta_unit") == "/bp" for r in ok):
-            chips += _chip("Δ rates", _fmt_money(d_bp) + "/bp")
-        chips += _chip("θ /day", _fmt_money(sum(r["theta_usd"] for r in ok)))
-        chips += _chip("vega", _fmt_money(sum(r["vega_usd"] for r in ok)))
-        st.markdown(
-            f"<div style='margin:4px 0 2px 0'>{chips}"
-            f"<span style='color:#94A3B8;font-size:11px'>&nbsp;"
-            f"{len(ok)}/{len(entries)} line(s) priced</span></div>",
-            unsafe_allow_html=True)
         st.caption(
             "Settlement smiles (spline per expiry, flat-extrapolated); v2 "
             "Black-76, rates Bachelier — per-leg IVs in [brackets]. F (live) "
@@ -1052,42 +1337,85 @@ def render_pricer():
             "European contracts (€/£) unconverted. ≈ = surface-interpolated "
             "date. Lines reprice on every rerun — this is a live view.")
 
-    # ── saved line sets ("portfolios") ────────────────────────────────────────
+    # ── portfolios (saved line sets) ──────────────────────────────────────────
+    def _line_payload(e):
+        return dict(kind=e.get("kind", "opt"), cls=e.get("cls", ""),
+                    src=e["src"], mkt=e["mkt"], lots=e.get("lots", 1),
+                    desc=e.get("desc", ""),
+                    exp=(e["exp"].isoformat() if e.get("exp") else None))
+
+    # deferred top-toolbar Save-blotter action (entries only exist now) —
+    # writes to the BLOTTERS store, separate from portfolios
+    if _blot_go:
+        payload = [_line_payload(e) for e in entries
+                   if e.get("res") and not e.get("err")]
+        if not payload:
+            st.toast("Save blotter: no priced lines", icon="⚠️")
+        else:
+            from datetime import datetime as _dt_
+            name = (_blot_nm or "").strip() or \
+                "blotter " + _dt_.now().strftime("%Y-%m-%d %H:%M")
+            bls = [s for s in _bl_load() if s["name"] != name]
+            bls.append({"name": name, "lines": payload,
+                        "show_all": bool(show_all),
+                        "ts": _dt_.now().isoformat(timespec="minutes")})
+            _bl_write(bls)
+            st.toast(f"blotter saved as “{name}” ({len(payload)} lines)",
+                     icon="💾")
+
     _msg = st.session_state.pop("_pr_ls_msg", None)
     if _msg:
         st.info(_msg)
-    l1, l2, l3, l4, l5, _lsp = st.columns([1.3, 0.9, 1.5, 0.6, 0.55, 1.15])
-    nm = l1.text_input("Portfolio name", key="_pr_ls_name",
-                       placeholder="e.g. Rates view · Stocks view")
-    l2.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
-    if l2.button("💾 Save lines", key="_pr_ls_save",
-                 help="saves ALL currently priced lines under this name "
-                      "(same name = overwrite)"):
-        payload = [dict(kind=e.get("kind", "opt"), cls=e.get("cls", ""),
-                        src=e["src"], mkt=e["mkt"], lots=e.get("lots", 1),
-                        desc=e.get("desc", ""),
-                        exp=(e["exp"].isoformat() if e.get("exp") else None))
-                   for e in entries
-                   if e.get("res") and not e.get("err")]
-        name = (nm or "").strip()
-        if not payload:
-            st.warning("no priced lines to save")
-        elif not name:
-            st.warning("name the portfolio first")
-        else:
-            from datetime import datetime as _dt_
-            sets = [s for s in _ls_load() if s["name"] != name]
-            sets.append({"name": name, "lines": payload,
-                         "ts": _dt_.now().isoformat(timespec="minutes")})
-            _ls_write(sets)
-            st.success(f"saved **{name}** ({len(payload)} lines)")
+    # Semantics (Rajat 2026-08-19): the NAME BOX is for CREATING a new
+    # portfolio only — always empty by default, never auto-filled. Every
+    # action on an EXISTING portfolio (Replace / Load / Delete, and Add
+    # ticked when the box is empty) targets the DROPDOWN selection.
+    l1, l2, l3, l4, l5, l6 = st.columns([1.25, 0.85, 1.5, 0.8, 0.55, 0.4])
+    nm = l1.text_input("New portfolio name", key="_pr_ls_name",
+                       placeholder="only when creating a new one")
     _sets = _ls_load()
+    pick = None
     if _sets:
         pick = l3.selectbox(
-            "Saved portfolios", range(len(_sets)), key="_pr_ls_pick",
+            "Portfolios", range(len(_sets)), key="_pr_ls_pick",
             format_func=lambda i: (f"{_sets[i]['name']} "
                                    f"({len(_sets[i]['lines'])} lines · "
                                    f"{_sets[i].get('ts', '')[:10]})"))
+    l2.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
+    if l2.button("➕ Add ticked", key="_pr_ls_addtk",
+                 help="adds the ✓-ticked priced lines to a portfolio: to the "
+                      "NEW name on the left if you typed one, else to the "
+                      "portfolio selected in the dropdown"):
+        sel = [entries[i] for i in ticked
+               if entries[i].get("res") and not entries[i].get("err")]
+        skipped = len(ticked) - len(sel)
+        name = (nm or "").strip() or \
+            (_sets[pick]["name"] if pick is not None else "")
+        if not name:
+            st.warning("type a new portfolio name (left) — none exist yet")
+        elif not sel:
+            st.warning("tick ✓ on priced lines in the table first")
+        else:
+            from datetime import datetime as _dt_
+            sets = _ls_load()
+            tgt = next((s for s in sets if s["name"] == name), None)
+            if tgt is None:
+                tgt = {"name": name, "lines": [],
+                       "ts": _dt_.now().isoformat(timespec="minutes")}
+                sets.append(tgt)
+            tgt["lines"].extend(_line_payload(e) for e in sel)
+            tgt["show_all"] = bool(show_all)
+            tgt["ts"] = _dt_.now().isoformat(timespec="minutes")
+            _ls_write(sets)
+            # rerun so the Portfolios dropdown (rendered above) picks up a
+            # newly created set — opening a selectbox alone never reruns
+            st.session_state["_pr_ls_msg"] = (
+                f"added {len(sel)} line(s) to **{name}** "
+                f"(now {len(tgt['lines'])} lines)"
+                + (f" · {skipped} unpriced skipped" if skipped else ""))
+            st.session_state.pop("_pr_ls_name", None)  # name box: create-only
+            st.rerun()
+    if _sets:
         l4.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
         if l4.button("↺ Load", key="_pr_ls_load",
                      help="replaces the current lines with this portfolio"):
@@ -1098,26 +1426,92 @@ def render_pricer():
                 st.session_state["_pr_ls_msg"] = " · ".join(notes[:4])
             st.rerun()
         l5.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
-        if l5.button("🗑", key="_pr_ls_del", help="delete this saved portfolio"):
+        if l5.button("⟳ Replace", key="_pr_ls_repl",
+                     help="OVERWRITES the dropdown-selected portfolio with "
+                          "ALL currently priced lines (asks to confirm) — "
+                          "the edit loop: ↺ Load, change lines, ⟳ Replace"):
+            st.session_state["_pr_repl_confirm"] = _sets[pick]["name"]
+        l6.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
+        if l6.button("🗑", key="_pr_ls_del", help="delete this portfolio"):
             _ls_write([s for i, s in enumerate(_sets) if i != pick])
             st.rerun()
 
-    # ── scenario (one option line at a time) ─────────────────────────────────
-    _scn_opts = [e for e in entries
-                 if e.get("res") and not e.get("err") and e.get("kind") == "opt"]
-    if _scn_opts:
-        sc1, sc2, _sp = st.columns([1.0, 1.0, 3.4])
-        _pick = sc1.selectbox("Scenario line", [e["line"] for e in _scn_opts],
-                              key="_pr_scn_pick",
-                              format_func=lambda n: f"line {n}")
-        sc2.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
-        if sc2.button("🎬 Run Scenario", key="_pr_scn_btn"):
-            import copy
-            e = next(x for x in _scn_opts if x["line"] == _pick)
-            st.session_state["_pr_scn"] = copy.deepcopy(
-                dict(src=e["src"], mkt=e["mkt"], mlbl=e["mlbl"], exp=e["exp"],
-                     lots=e["lots"], desc=e["desc"], res=e["res"]))
+    # ── replace confirmation (destructive → explicit yes) ────────────────────
+    _rc = st.session_state.get("_pr_repl_confirm")
+    if _rc:
+        _n_priced = sum(1 for e in entries
+                        if e.get("res") and not e.get("err"))
+        st.warning(f"Replace portfolio **{_rc}** with the {_n_priced} "
+                   f"currently priced line(s)? This overwrites its contents.")
+        cc1, cc2, _ccsp = st.columns([0.9, 0.6, 3.7])
+        if cc1.button("✓ Yes, replace", type="primary", key="_pr_repl_yes"):
+            payload = [_line_payload(e) for e in entries
+                       if e.get("res") and not e.get("err")]
+            st.session_state.pop("_pr_repl_confirm", None)
+            sets = _ls_load()
+            tgt = next((s for s in sets if s["name"] == _rc), None)
+            if not payload:
+                st.error("no priced lines to save — not replaced")
+            elif tgt is None:
+                st.error(f"portfolio “{_rc}” no longer exists")
+            else:
+                from datetime import datetime as _dt_
+                tgt["lines"] = payload
+                tgt["show_all"] = bool(show_all)
+                tgt["ts"] = _dt_.now().isoformat(timespec="minutes")
+                _ls_write(sets)
+                st.toast(f"“{_rc}” replaced ({len(payload)} lines)", icon="🔄")
+                st.rerun()
+        if cc2.button("✕ Cancel", key="_pr_repl_no"):
+            st.session_state.pop("_pr_repl_confirm", None)
             st.rerun()
+    # ── blotters (separate store: ad-hoc dated snapshots) ────────────────────
+    _bls = _bl_load()
+    if _bls:
+        b1, b2, b3, _bsp = st.columns([1.6, 0.6, 0.45, 2.7])
+        bpick = b1.selectbox(
+            "Blotters", range(len(_bls)), key="_pr_bl_pick",
+            format_func=lambda i: (f"{_bls[i]['name']} "
+                                   f"({len(_bls[i]['lines'])} lines)"))
+        b2.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
+        if b2.button("↺ Load", key="_pr_bl_load",
+                     help="replaces the current lines with this blotter"):
+            stubs, notes = _ls_apply(_bls[bpick], uni)
+            st.session_state["_pr_lines"] = stubs
+            st.session_state.pop("_pr_scn", None)
+            if notes:
+                st.session_state["_pr_ls_msg"] = " · ".join(notes[:4])
+            st.rerun()
+        b3.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
+        if b3.button("🗑", key="_pr_bl_del", help="delete this blotter"):
+            _bl_write([s for i, s in enumerate(_bls) if i != bpick])
+            st.rerun()
+
+    # ── scenario — runs on the ✓-ticked line (Rajat 2026-08-19: dropdown
+    # removed; exactly ONE ticked line, must be a priced option) ─────────────
+    if any(e.get("res") and not e.get("err") for e in entries):
+        sc1, _scsp = st.columns([1.1, 4.3])
+        if sc1.button("🎬 Run Scenario", key="_pr_scn_btn",
+                      help="tick ✓ exactly ONE option line in the table, "
+                           "then run — P&L vs underlying, spot×vol matrix "
+                           "and time decay render below"):
+            _tk = [entries[i] for i in ticked]
+            if len(_tk) != 1:
+                st.error(f"Run Scenario: tick exactly ONE line in the table "
+                         f"({len(_tk)} ticked).")
+            elif _tk[0].get("err") or not _tk[0].get("res"):
+                st.error("Run Scenario: the ticked line isn't priced.")
+            elif _tk[0].get("kind") == "fut":
+                st.error("Scenario needs an option structure — a future is "
+                         "linear (P&L = Δ$ × move).")
+            else:
+                import copy
+                e = _tk[0]
+                st.session_state["_pr_scn"] = copy.deepcopy(
+                    dict(src=e["src"], mkt=e["mkt"], mlbl=e["mlbl"],
+                         exp=e["exp"], lots=e["lots"], desc=e["desc"],
+                         res=e["res"]))
+                st.rerun()
 
     _scn = st.session_state.get("_pr_scn")
     if _scn:

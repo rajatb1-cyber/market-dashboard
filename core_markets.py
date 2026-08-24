@@ -184,7 +184,16 @@ def _daily_vol(hist, sess_d: date, is_bp: bool):
              if (d1_ - d0).days <= 5]
     if len(diffs) < 8:
         return None
-    return float(np.std(np.asarray(diffs), ddof=1))
+    # degenerate-history guard (KOSPI "69σ" incident 2026-08-20: a glitched
+    # flat/stale Yahoo daily frame cached for 6h → σ≈0 → any normal move
+    # shows as an absurd ratio). A near-flat series is bad DATA, not low
+    # vol — suppress σ entirely rather than emit nonsense ratios.
+    if sum(1 for x in diffs if x != 0) < 5:
+        return None
+    sd = float(np.std(np.asarray(diffs), ddof=1))
+    if not np.isfinite(sd) or sd <= 0:
+        return None
+    return sd
 
 
 def _h_days(h: str, sess_d: date) -> int:
@@ -292,6 +301,50 @@ def _px_hist(tkr: str):
         return None
 
 
+# ── FX prev-close baseline ───────────────────────────────────────────────────
+# FX trades ~24h, so _one()'s "last 5m bar before today's date" baseline is a
+# MIDNIGHT-UTC snapshot, not a close — any move between the daily close
+# (~21-22:00 UTC) and midnight silently vanished from the 1d change, and the
+# synth BBDXY live level (base × weighted 1d) understated multi-day moves
+# with it ("dollar fell 3 days but BBDXY doesn't show it", 2026-08-20).
+# Baseline for every FX row is therefore the last COMPLETED daily close from
+# the pairs' own daily candles (NY-close convention, same basis as the
+# horizon columns). One batched 10d pull, anti-poison cached.
+@st.cache_data(ttl=3600, show_spinner=False)
+def _fx_prevcls_c(tkrs: tuple) -> dict:
+    """{fx_ticker: (last_completed_daily_close, close_date)}."""
+    import yfinance as yf
+    today = datetime.now(timezone.utc).date()
+    out = {}
+    ytk = [t for t in tkrs if t != "USDCNH=X"]
+    df = yf.download(ytk, period="10d", interval="1d",
+                     progress=False, auto_adjust=True)["Close"]
+    if isinstance(df, pd.Series):
+        df = df.to_frame(name=ytk[0])
+    for t in ytk:
+        if t in df.columns:
+            s = df[t].dropna()
+            s = s[[i.date() < today for i in s.index]]
+            if not s.empty:
+                out[t] = (float(s.iloc[-1]), s.index[-1].date())
+    if "USDCNH=X" in tkrs:                     # AlphaVantage-served history
+        h = _px_hist("USDCNH=X")
+        if h:
+            hh = [(d0, v) for d0, v in h if d0 < today]
+            if hh:
+                out["USDCNH=X"] = (hh[-1][1], hh[-1][0])
+    if not out:
+        raise ValueError("fx prev-close batch empty")
+    return out
+
+
+def _fx_prevcls(tkrs: tuple) -> dict:
+    try:
+        return _fx_prevcls_c(tkrs)
+    except Exception:
+        return {}
+
+
 # ── synthetic BBDXY row ──────────────────────────────────────────────────────
 # Daily history = watchlist's BBDXY_SYNTH (geometric 12-pair basket, base
 # 1200 at window start — the LEVEL is window-relative, changes are the
@@ -315,9 +368,11 @@ def _bbdxy_hist():
         return None
 
 
-def _bbdxy_live(px: dict):
+def _bbdxy_live(px: dict, fxpc: dict):
     """(live_level, pct_1d, stalest_ts, sess_date) from component quotes +
-    the daily hist, or (last_close, None, None, last_date) fallback."""
+    the daily hist, or (last_close, None, None, last_date) fallback.
+    Per-pair baseline = completed daily close (fxpc) so the 1d matches the
+    daily-close basis of hist; px's midnight prev only if the batch failed."""
     from watchlist import BBDXY_WEIGHTS
     hist = _bbdxy_hist()
     if not hist:
@@ -325,9 +380,15 @@ def _bbdxy_live(px: dict):
     dlogs, w_used, tss = [], 0.0, []
     for tkr, (w, invert) in BBDXY_WEIGHTS.items():
         d = px.get(tkr)
-        if not d or not d[0] or not d[1]:
+        if not d or not d[0]:
             continue
         last, prev, ts_iso = d
+        if tkr in fxpc:
+            prev = fxpc[tkr][0]
+        elif fxpc:          # batch alive but this pair missing → skip the
+            continue        # leg rather than mix baselines
+        if not prev:
+            continue
         dlogs.append((w, (-1 if invert else 1) * np.log(last / prev)))
         w_used += w
         tss.append(pd.Timestamp(ts_iso))
@@ -634,18 +695,32 @@ def _chg_cells(last, hist, sess_d: date, is_bp: bool, d1, d3=None):
     vol_d = _daily_vol(hist, sess_d, is_bp)
     ratios = {}
 
+    # circuit-breaker: |move/σ| beyond this is data error, not markets —
+    # even Mar-2020 style days print low double digits on this metric.
+    # Suspect ratios show an amber ⚠ and are EXCLUDED from row shading.
+    _R_MAX = 12
+    _SUSPECT = ("<br><span style='font-size:10px;color:#D97706;"
+                "font-weight:700' title='move/σ implausible (>12) — "
+                "history or quote data suspect, ratio suppressed'>"
+                "⚠ σ?</span>")
+
     def ratio_of(dval, h):
         if vol_d is None or dval is None or vol_d <= 0:
             return None
         return dval / (vol_d * np.sqrt(_h_days(h, sess_d)))
 
+    def _sig_or_flag(r):
+        if r is not None and abs(r) > _R_MAX:
+            return None, _SUSPECT
+        return r, _sig_html(r)
+
     cells = ""
     for h, dv in (("1d", d1), ("3d", d3)):
-        r = ratio_of(dv, h)
+        r, sig = _sig_or_flag(ratio_of(dv, h))
         ratios[h] = r
         if dv is not None:
             cells += _cell(f"{dv:+.1f}bp" if is_bp else f"{dv:+.2f}%",
-                           _UP if dv >= 0 else _DN, _sig_html(r))
+                           _UP if dv >= 0 else _DN, sig)
         else:
             cells += _cell("—", _MUT)
     cuts = _cuts(sess_d)
@@ -658,9 +733,9 @@ def _chg_cells(last, hist, sess_d: date, is_bp: bool, d1, d3=None):
             else:
                 d = (last / ref - 1) * 100
                 s = f"{d:+.1f}%"
-            r = ratio_of(d, h)
+            r, sig = _sig_or_flag(ratio_of(d, h))
             ratios[h] = r
-            cells += _cell(s, _UP if d >= 0 else _DN, _sig_html(r))
+            cells += _cell(s, _UP if d >= 0 else _DN, sig)
         else:
             ratios[h] = None
             cells += _cell("—", _MUT)
@@ -677,9 +752,18 @@ def render_core_markets():
         "(near-real-time), 60s cache</span></div>", unsafe_allow_html=True)
 
     c1, c2, _sp = st.columns([1, 1.6, 4.4])
-    if c1.button("🔄 Refresh", key="_cm_refresh", use_container_width=True):
+    if c1.button("🔄 Refresh", key="_cm_refresh", use_container_width=True,
+                 help="clears quotes AND cached daily histories — use this "
+                      "if any σ/horizon figures look wrong"):
         _fetch_px.clear()
         _cnbc_yields.clear()
+        # histories too: a glitched Yahoo daily frame otherwise stays
+        # pinned for 6h and poisons σ/horizons (KOSPI 69σ, 2026-08-20)
+        _px_hist_c.clear()
+        _yld_hist_c.clear()
+        _bbdxy_hist_c.clear()
+        _fx_prevcls_c.clear()
+        _bars_5d_c.clear()
     shade_h = c2.selectbox(
         "Shade rows by |move/σ|", ["1d", "3d", "1w", "1m", "3m", "ytd"],
         index=2, key="_cm_shade",
@@ -695,6 +779,8 @@ def render_core_markets():
     _extra = tuple(sorted(set(_FUT_LIVE.values()) | set(BBDXY_WEIGHTS)
                           - set(px_tkrs)))
     px = _fetch_px(px_tkrs + _extra)
+    fxpc = _fx_prevcls(tuple(sorted(
+        {t for t in px_tkrs if t.endswith("=X")} | set(BBDXY_WEIGHTS))))
     try:
         try:
             quotes = _cnbc_yields(yl_syms)
@@ -719,6 +805,10 @@ def render_core_markets():
                 last, dbp, d3, ts_iso, sess_d = d
                 lvl = f"{last:.3f}%"
                 hist = _yld_hist(tkr)
+                # consistency guard (yields): live >1.5pp from the cached
+                # history's last value = bad history frame — drop it
+                if hist and abs(last - hist[-1][1]) > 1.5:
+                    hist = None
                 cells, vol_d, ratios = _chg_cells(last, hist, sess_d,
                                                   True, dbp, d3)
                 vol_s = f"{vol_d:.1f}bp" if vol_d else "—"
@@ -745,7 +835,7 @@ def render_core_markets():
                 _tt = [pd.Timestamp(t) for t in (tsa, tsb) if t]
                 ts = min(_tt) if _tt else None      # staler leg = honesty
         elif kind == "synth":
-            r = _bbdxy_live(px)
+            r = _bbdxy_live(px, fxpc)
             if r:
                 last, pct, ts, sess_d = r
                 hist = _bbdxy_hist()
@@ -763,7 +853,9 @@ def render_core_markets():
             d = px.get(tkr)
             if d:
                 last, prev, ts_iso = d
-                ts = pd.Timestamp(ts_iso)
+                if tkr.endswith("=X") and tkr in fxpc:
+                    prev = fxpc[tkr][0]     # daily-close baseline (see
+                ts = pd.Timestamp(ts_iso)   # _fx_prevcls_c) — midnight-UTC
                 pct = (last / prev - 1) * 100 if prev else None
                 disp_last = last
                 fut_note = ""
@@ -787,6 +879,12 @@ def render_core_markets():
                 lvl = _fmt_px(disp_last) + fut_note
                 hist = _px_hist(tkr)
                 pts = [(d0, v) for d0, v in (hist or []) if d0 < ts.date()]
+                # consistency guard: if the live quote is wildly off the
+                # cached history's last close (>35%), the HISTORY is
+                # garbage (scale glitch / stale frame) — drop it so the
+                # horizon/σ/RSI columns show "—" instead of nonsense
+                if pts and last and abs(last / pts[-1][1] - 1) > 0.35:
+                    hist, pts = None, []
                 d3 = None
                 if len(pts) >= 3 and (ts.date() - pts[-3][0]).days <= 10 \
                         and pts[-3][1]:
@@ -876,7 +974,10 @@ def render_core_markets():
              "start — the level is window-relative, read the changes); live "
              "level/1d computed from the component pairs' live quotes, "
              "weights renormalised over fresh legs; freshness dot = stalest "
-             "leg. Yields: CNBC/Refinitiv feed; "
+             "leg. FX 1d (pairs and BBDXY) vs the last COMPLETED daily "
+             "close (NY-close convention, same basis as the horizon "
+             "columns) — not the midnight-UTC snapshot. "
+             "Yields: CNBC/Refinitiv feed; "
              "1d Δbp vs previous US close for US and vs previous LOCAL cash "
              "close for DE/UK/JP (last print ≤17:30 Berlin / 16:30 London / "
              "15:15 Tokyo from CNBC minute-bar history — terminal "

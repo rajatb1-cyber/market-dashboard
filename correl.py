@@ -7,9 +7,10 @@ from datetime import date, timedelta
 import yfinance as yf
 
 from watchlist import (fetch_batch, load_config, save_config,
-                       FRED_MAP, ECB_MAP, ALPHAVANTAGE_FX_MAP,
-                       _fetch_fred_df, _fetch_ecb_df, _fetch_alphavantage_fx,
-                       _compute_bbdxy)
+                       FRED_MAP, ECB_MAP, JGB_MAP, ALPHAVANTAGE_FX_MAP,
+                       _fetch_fred_df, _fetch_ecb_df, _fetch_jgb_df,
+                       _fetch_alphavantage_fx, _compute_bbdxy,
+                       _watchlist_tickers)
 
 _DETAIL_DAYS = {
     "1M": 30, "3M": 91, "6M": 182,
@@ -17,36 +18,50 @@ _DETAIL_DAYS = {
 }
 
 
-@st.cache_data(ttl=300)
-def _fetch_detail_series(ticker: str, start_str: str) -> pd.Series:
-    """Daily close for one ticker going back to start_str (handles all sources)."""
+def _close_series(df) -> pd.Series:
+    # robust against 1-row frames (.squeeze() → scalar) and MultiIndex cols
+    c = df["Close"]
+    return (c.iloc[:, 0] if isinstance(c, pd.DataFrame) else c).astype(float)
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _fetch_detail_series_c(ticker: str, start_str: str) -> pd.Series:
+    """Daily close for one ticker back to start_str (all watchlist sources).
+    RAISES on empty so st.cache_data never pins a transient failure
+    (anti-poison rule); _fetch_detail_series is the safe wrapper."""
     if ticker == "BBDXY_SYNTH":
         df = _compute_bbdxy(start=start_str)
     elif ticker in FRED_MAP:
         df = _fetch_fred_df(FRED_MAP[ticker], start=start_str)
+    elif ticker in JGB_MAP:
+        df = _fetch_jgb_df(JGB_MAP[ticker], start=start_str)
     elif ticker in ECB_MAP:
         df = _fetch_ecb_df(ECB_MAP[ticker], start=start_str)
     elif ticker in ALPHAVANTAGE_FX_MAP:
         from_sym, to_sym = ALPHAVANTAGE_FX_MAP[ticker]
         df = _fetch_alphavantage_fx(from_sym, to_sym, start=start_str)
     else:
-        try:
-            df = yf.download(ticker, start=start_str, interval="1d",
-                             auto_adjust=True, progress=False)
-            if isinstance(df.columns, pd.MultiIndex):
-                df.columns = df.columns.get_level_values(0)
-            df = df[df["Close"].notna()]
-            if not df.empty:
-                idx = pd.DatetimeIndex(df.index)
-                if idx.tz is not None:
-                    idx = idx.tz_convert("UTC").tz_localize(None)
-                df.index = idx.normalize()
-                df = df[~df.index.duplicated(keep="last")]
-        except Exception:
-            df = pd.DataFrame()
+        df = yf.download(ticker, start=start_str, interval="1d",
+                         auto_adjust=True, progress=False)
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.get_level_values(0)
+        df = df[df["Close"].notna()]
+        if not df.empty:
+            idx = pd.DatetimeIndex(df.index)
+            if idx.tz is not None:
+                idx = idx.tz_convert("UTC").tz_localize(None)
+            df.index = idx.normalize()
+            df = df[~df.index.duplicated(keep="last")]
     if df.empty:
+        raise ValueError(f"no data for {ticker}")
+    return _close_series(df)
+
+
+def _fetch_detail_series(ticker: str, start_str: str) -> pd.Series:
+    try:
+        return _fetch_detail_series_c(ticker, start_str)
+    except Exception:
         return pd.Series(dtype=float)
-    return df["Close"].squeeze().astype(float)
 
 
 def _detail_charts(asset1: str, asset2: str,
@@ -372,11 +387,19 @@ def render_correl():
         return
 
     # ── Fetch data ────────────────────────────────────────────────────────────
-    needed_names   = list(dict.fromkeys(row_names + col_names))
-    needed_tickers = tuple(name_to_ticker[n] for n in needed_names)
+    # Fetch the FULL watchlist batch, not the selected subset: _all_daily is
+    # cached per ticker-TUPLE, so a subset tuple is a cache MISS that triggers
+    # a fresh network download on every selection change. The full tuple is
+    # the same entry the Watchlist table already warmed — selection changes
+    # become instant cache hits (same trick as watchlist._raw_daily).
+    needed_names = list(dict.fromkeys(row_names + col_names))
+    _wl = _watchlist_tickers()
+    _needed = {name_to_ticker[n] for n in needed_names}
+    fetch_tkrs = _wl if _needed <= set(_wl) else tuple(
+        dict.fromkeys(tuple(_wl) + tuple(sorted(_needed - set(_wl)))))
 
     with st.spinner("Computing correlations…"):
-        batch = fetch_batch(needed_tickers)
+        batch = fetch_batch(fetch_tkrs)
 
     series = {}
     for name in needed_names:
@@ -384,7 +407,7 @@ def render_correl():
         df  = batch.get(tkr)
         if df is None or df.empty:
             continue
-        close = df["Close"].squeeze().astype(float)
+        close = _close_series(df)
         close = close[
             (close.index >= pd.Timestamp(start_date)) &
             (close.index <= pd.Timestamp(end_date))
@@ -415,7 +438,7 @@ def render_correl():
     corr      = ret_df[all_avail].corr()
     sub       = corr.loc[row_avail, col_avail]
     pct       = (sub * 100).round(1)
-    n_days    = len(ret_df.dropna(how="all"))
+    n_days    = len(ret_df)          # already dropna(how="all") above
 
     # ── Heatmap ───────────────────────────────────────────────────────────────
     z    = pct.values.tolist()

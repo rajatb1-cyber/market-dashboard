@@ -28,12 +28,20 @@ except Exception:                                   # pragma: no cover
     _component = None
 
 
-def click_table(html: str, selected=None, key=None):
+def click_table(html: str, selected=None, key=None, multi=False):
     """Render clickable-table HTML; returns the clicked data-key (or None).
+
+    multi=True (Pricer 2026-08-19): `selected` is a LIST of data-keys;
+    clicks toggle membership and the component returns the new list.
+    Styling hooks: a selected element gets its text swapped to its
+    `data-on` attribute (default "☑") and its closest <tr> gains class
+    "ct-on" so the page CSS can highlight the whole row.
+
     Falls back to a plain (non-clickable) markdown render if the component
     machinery is unavailable."""
     if _component is None:
         import streamlit as st
         st.markdown(html, unsafe_allow_html=True)
-        return None
-    return _component(html=html, selected=selected, key=key, default=None)
+        return [] if multi else None
+    return _component(html=html, selected=selected, key=key, multi=multi,
+                      default=([] if multi else None))

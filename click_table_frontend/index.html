@@ -23,16 +23,33 @@
   function render(args) {
     var root = document.getElementById("root");
     root.innerHTML = args.html || "";
-    var selected = args.selected || null;
+    var multi = !!args.multi;
+    var selected = args.selected || (multi ? [] : null);
     root.querySelectorAll("[data-key]").forEach(function (el) {
       var k = el.getAttribute("data-key");
-      if (k === selected) {
-        el.textContent = "☑";
-        el.style.background = "#7C3AED";
-        el.style.color = "#FFFFFF";
+      var isSel = multi ? selected.indexOf(k) >= 0 : k === selected;
+      if (isSel) {
+        if (el.hasAttribute("data-on")) {
+          // page CSS owns the styling: swap the glyph, tag the row
+          el.textContent = el.getAttribute("data-on");
+        } else {
+          el.textContent = "☑";
+          el.style.background = "#7C3AED";
+          el.style.color = "#FFFFFF";
+        }
+        el.classList.add("ct-sel");
+        var tr = el.closest("tr");
+        if (tr) tr.classList.add("ct-on");
       }
       el.addEventListener("click", function () {
-        var v = (k === selected) ? null : k;
+        var v;
+        if (multi) {
+          v = selected.slice();
+          var ix = v.indexOf(k);
+          if (ix >= 0) v.splice(ix, 1); else v.push(k);
+        } else {
+          v = (k === selected) ? null : k;
+        }
         send("streamlit:setComponentValue", { value: v, dataType: "json" });
       });
     });

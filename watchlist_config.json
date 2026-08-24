@@ -216,6 +216,16 @@
       "class": "Commodity"
     },
     {
+      "name": "RBOB Gasoline",
+      "ticker": "RB=F",
+      "class": "Commodity"
+    },
+    {
+      "name": "Heating Oil (ULSD)",
+      "ticker": "HO=F",
+      "class": "Commodity"
+    },
+    {
       "name": "Bitcoin",
       "ticker": "BTC-USD",
       "class": "Crypto"

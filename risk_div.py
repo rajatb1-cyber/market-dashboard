@@ -217,10 +217,19 @@ def _standalone(book, fx, sel_fut, sel_fx, products, ivols, proxies) -> pd.DataF
     return pd.DataFrame(rows, columns=["name", "product", "proxy", "sign", "var"])
 
 
-def compute(book, fx, sel_fut, sel_fx, products, ivols, proxies, fred_key=None) -> dict:
+def compute(book, fx, sel_fut, sel_fx, products, ivols, proxies, fred_key=None,
+            extra_pos=None) -> dict:
     """Returns {positions: DataFrame, windows: [(name, obs, diversified, undiv, benefit)],
-    meta: {...}}. Correlation windows = WINDOWS."""
+    meta: {...}}. Correlation windows = WINDOWS.
+    extra_pos: optional [[name, product, proxy, sign, var(1σ$)], …] rows appended
+    to the book — used by risk_options to fold option positions into √(vᵀRv)
+    (the proxy carries the correlation; var is delta-equiv or reval 1σ)."""
     pos = _standalone(book, fx, sel_fut, sel_fx, products, ivols, proxies)
+    if extra_pos:
+        pos = pd.concat(
+            [pos, pd.DataFrame(extra_pos,
+                               columns=["name", "product", "proxy", "sign", "var"])],
+            ignore_index=True)
     if pos.empty:
         return {"positions": pos, "windows": [], "meta": {"error": "no positions selected"}}
 
