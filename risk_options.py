@@ -245,6 +245,86 @@ def _hist_dF(o: dict, F0: float, dv01, proxy, fred_key, n: int = 260):
         return pd.Series(dtype=float)
 
 
+_PNL_MEMO: dict = {}
+_PNL_TTL_S = 120
+
+
+def _und_moves(o: dict):
+    """Underlying price moves in POINTS vs the close 1/3/5 business days back:
+    v2 markets from yfinance daily closes (incl. today's partial bar = the
+    rough live mark), STIR from the exact contract's settles in stir_bars.db.
+    Returns {1: Δ, 3: Δ, 5: Δ} or None (bond futures → no easy history)."""
+    base = o["mkt"].split("_")[0]
+    closes = None
+    if base in _STIR_DB_SYM:
+        try:
+            conn = sqlite3.connect(_STIR_DB)
+            rows = conn.execute(
+                "SELECT bar_date, close FROM stir_bars WHERE symbol=? AND exp6=? "
+                "ORDER BY bar_date", (_STIR_DB_SYM[base], o["und_exp6"])).fetchall()
+            conn.close()
+            closes = [float(c) for _, c in rows]
+        except Exception:
+            return None
+    elif o["src"] == "v2":
+        import pricer as _pr
+        tkr = _pr._YF_LIVE.get(o["mkt"])
+        if not tkr:
+            return None
+        try:
+            import yfinance as yf
+            h = yf.Ticker(tkr).history(period="10d", auto_adjust=True)["Close"]
+            closes = [float(v) for v in h.values]
+        except Exception:
+            return None
+    if not closes or len(closes) < 2:
+        return None
+    last = closes[-1]
+    out = {}
+    for hz in (1, 3, 5):
+        if len(closes) > hz:
+            out[hz] = last - closes[-1 - hz]
+    return out or None
+
+
+def est_pnl(book: pd.DataFrame, sel: set | None = None, live: bool = True) -> dict:
+    """Rough option PnL from delta × underlying move (Rajat 2026-08-26:
+    'better than blank — keep it grey'). {symbol: {1:$, 3:$, 5:$}} for the
+    options whose underlying has a usable history; memoized ~2 min. First
+    order only — gamma/vega/theta ignored, hence the muted display."""
+    import time as _t
+    now = _t.time()
+    key = "est_pnl"
+    ent = _PNL_MEMO.get(key)
+    if ent and now - ent[0] < _PNL_TTL_S:
+        return ent[1]
+    out = {}
+    opts, _notes = option_book(book, sel)
+    moves_memo: dict = {}
+    for o in opts:
+        try:
+            res = _greeks(o, live)
+            if res.get("err"):
+                continue
+            dv01 = res.get("dv01")
+            pdelta = float(res.get("delta_usd") or 0.0)     # $/pt (rates: $/bp)
+            if o["src"] == "rates":
+                if not dv01:
+                    continue
+                pdelta = pdelta / float(dv01)               # back to $/pt
+            mk = (o["src"], o["mkt"], o["und_exp6"])
+            if mk not in moves_memo:
+                moves_memo[mk] = _und_moves(o)
+            mv = moves_memo[mk]
+            if not mv:
+                continue
+            out[o["sym"]] = {hz: pdelta * d * o["fxr"] for hz, d in mv.items()}
+        except Exception:
+            continue
+    _PNL_MEMO[key] = (now, out)
+    return out
+
+
 def compute(book: pd.DataFrame, mode: str, products: dict, ivols: dict,
             proxies: dict, fred_key=None, live: bool = True,
             sel: set | None = None) -> dict:

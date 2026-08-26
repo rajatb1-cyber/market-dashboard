@@ -1019,6 +1019,9 @@ def _agg_table_html(rows: list) -> str:
         "pclose":  {"bg": "#FFFBEB", "badge": "⚪ prev-close", "bcol": "#B45309", "muted": True},
         "stale":   {"bg": "#FFFBEB", "badge": "🟡 stale",     "bcol": "#B45309", "muted": True},
         "settled": {"bg": "#F1F5F9", "badge": "⚪ settled",    "bcol": "#64748B", "muted": True},
+        # option PnL estimated as delta × underlying move (first order only:
+        # no gamma/vega/theta) — informative but never authoritative → muted
+        "dest":    {"bg": "#F1F5F9", "badge": "≈ Δ-est",      "bcol": "#64748B", "muted": True},
         "none":    {"bg": "#FEF2F2", "badge": "✖ no mark",    "bcol": "#B91C1C", "muted": True},
     }
     # live/delayed = ticking; closed = market shut, on today's close mark. All are a
@@ -1099,6 +1102,28 @@ def _agg_table_html(rows: list) -> str:
         f" <span style='color:#94A3B8;font-weight:500;font-size:9px'>USD</span></td>"
         f"<td style='{tf}'></td><td style='{tf}'></td><td style='{tf}'></td></tr>"
     )
+    # ── second Total incl. option Δ-estimates (Rajat 2026-08-26): grey/≈ so
+    # the mixed authoritative+estimated sum is never mistaken for a mark ─────
+    _dest_rows = [x for x in rows if (x[12] if len(x) > 12 else "") == "dest"]
+    if _dest_rows:
+        d1 = t1 + sum((x[6] or 0.0) for x in _dest_rows)
+        d3 = t3 + sum((x[7] or 0.0) for x in _dest_rows)
+        d5 = t5 + sum((x[8] or 0.0) for x in _dest_rows)
+        tf2 = tf.replace("border-top:2px solid #475569",
+                         "border-top:1px dashed #94A3B8") + ";color:#64748B"
+        tf2_l = tf2.replace("text-align:right", "text-align:left")
+        _est_cell = lambda t: f"≈ ${t:,.0f}"
+        body += (
+            f"<tr><td style='{tf2_l}'>Total incl. options (Δ-est: "
+            f"{len(_dest_rows)})</td><td style='{tf2_l}'></td>"
+            f"<td style='{tf2_l}'></td><td style='{tf2_l}'></td>"
+            f"<td style='{tf2}'></td><td style='{tf2}'></td>"
+            f"<td style='{tf2}'>{_est_cell(d1)}</td>"
+            f"<td style='{tf2}'>{_est_cell(d3)}</td>"
+            f"<td style='{tf2}'>{_est_cell(d5)}</td>"
+            f"<td style='{tf2}'></td><td style='{tf2}'></td>"
+            f"<td style='{tf2}'></td><td style='{tf2}'></td><td style='{tf2}'></td></tr>"
+        )
     return (f"<div style='overflow-x:auto'><table style='border-collapse:collapse;width:100%;"
             f"font-family:monospace'><thead>{header}</thead><tbody>{body}</tbody></table></div>")
 
@@ -1147,9 +1172,19 @@ def _net_split_html(split: dict) -> str:
                   f"<td style='{td}'>{_sv(fv)}</td>"
                   f"<td style='{td}'>{_sv(ov)}</td>"
                   f"<td style='{td};font-weight:700'>{_sv(tot)}</td></tr>")
-        b += (f"<tr><td style='{tf_l}'>Net</td><td style='{tf}'>{_sv(t_f)}</td>"
-              f"<td style='{tf}'>{_sv(t_o)}</td>"
-              f"<td style='{tf}'>{_sv(t_f + t_o)}</td></tr>")
+        if cls == "FX":
+            # Rajat 2026-08-25: FX Net row in MY-USD-position terms — short
+            # foreign ccys ⇒ LONG USD shows positive (per-ccy rows keep
+            # their own sign, − = short that ccy). Same convention as the
+            # Net USD position metric in the FX Exposure section.
+            b += (f"<tr><td style='{tf_l}' title='+ = net long USD'>"
+                  f"Net USD</td><td style='{tf}'>{_sv(-t_f)}</td>"
+                  f"<td style='{tf}'>{_sv(-t_o)}</td>"
+                  f"<td style='{tf}'>{_sv(-(t_f + t_o))}</td></tr>")
+        else:
+            b += (f"<tr><td style='{tf_l}'>Net</td><td style='{tf}'>{_sv(t_f)}</td>"
+                  f"<td style='{tf}'>{_sv(t_o)}</td>"
+                  f"<td style='{tf}'>{_sv(t_f + t_o)}</td></tr>")
         cards += (f"<div style='flex:1 1 240px;min-width:240px'>"
                   f"<b style='font-size:12px'>{cls} <span style='color:#94A3B8;"
                   f"font-weight:400'>· {unit}</span></b>"
@@ -1161,7 +1196,9 @@ def _net_split_html(split: dict) -> str:
             "FX cash balances). <b>Option Δ risk</b> = options mapped to their "
             "underlying-equivalent (delta × lots × mult, × DV01 → $/bp for "
             "rates; × F → notional otherwise) — requires an options mode in "
-            "the dropdown. Signs: + long / − short the underlying.</div>")
+            "the dropdown. Signs: + long / − short the underlying; the FX "
+            "<b>Net USD</b> row is sign-flipped to YOUR USD position "
+            "(+ = net long USD).</div>")
     return ("<b style='font-size:12px'>Net delta risk by underlying</b>"
             f"<div style='display:flex;flex-wrap:wrap;gap:18px'>{cards}</div>"
             + note)
@@ -1989,15 +2026,31 @@ def render_risk():
         return "settled", _settled_asof                     # Flex settlement fallback
 
     _agg = []
+    _opt_pnl_est = {}
+    if not book.empty and "is_option" in book.columns and book["is_option"].any():
+        try:
+            import risk_options as _rop_est
+            _opt_pnl_est = _rop_est.est_pnl(book, set(eff_fut))
+        except Exception:
+            _opt_pnl_est = {}
     if not book.empty:
         for _, r in book[book["Symbol"].isin(eff_fut)].iterrows():
             sym = r["Symbol"]
             prod = eff_products.get(sym) or _guess_product(sym, r.get("Underlying", ""))
             pvb = float(r["position_value_base"])
             if bool(r.get("is_option")):
-                # Options: recognised + classified (Type=Option, correct product), with
-                # settled 1d/3d/5d PnL from Flex (options MTM daily, same as futures) and
-                # a premium + days-to-expiry note. Implied vol / 1d VaR / $Risk deferred → blank.
+                # Options: rough delta×move PnL off the vol-market surfaces
+                # when the underlying has history (Rajat 2026-08-26 — "better
+                # than blank, keep it grey": first-order only, no gamma/vega/
+                # theta, so muted ≈ Δ-est badge, excluded from the Total).
+                # Falls back to Flex settled marks, then blank.
+                _est = _opt_pnl_est.get(sym)
+                if _est:
+                    _agg.append(("Option", sym, prod, None, r["side"], pvb,
+                                 _est.get(1), _est.get(3), _est.get(5), None,
+                                 _opt_prem_str(pvb, r.get("Expiry")),
+                                 float(r["Quantity"]), "dest", "delta est"))
+                    continue
                 omd = _settled_md.get(sym, {})
                 _src = ("settled", _settled_asof) if omd else ("none", "")
                 _agg.append(("Option", sym, prod, None, r["side"], pvb,
@@ -2048,7 +2101,7 @@ def render_risk():
     else:
         # Freshness banner: how many rows have a current intraday mark vs old fallbacks.
         _n_live = sum(1 for x in _agg if x[12] in ("live", "delayed", "closed"))
-        _n_bad  = sum(1 for x in _agg if x[12] in ("pclose", "stale", "settled", "none"))
+        _n_bad  = sum(1 for x in _agg if x[12] in ("pclose", "stale", "settled", "none", "dest"))
         if _n_bad:
             _detail = []
             _n_pcl     = sum(1 for x in _agg if x[12] == "pclose")
@@ -2059,6 +2112,8 @@ def render_risk():
             if _n_stale:   _detail.append(f"{_n_stale} stale (earlier day)")
             if _n_settled: _detail.append(f"{_n_settled} on IBKR settled (as of {_settled_asof})")
             if _n_none:    _detail.append(f"{_n_none} with no price")
+            _n_dest = sum(1 for x in _agg if x[12] == "dest")
+            if _n_dest:    _detail.append(f"{_n_dest} option Δ-estimates")
             _bmsg = (f"⚠️ **{_n_live}/{len(_agg)} positions have a current intraday mark.** "
                      f"The rest are NOT intraday — " + "; ".join(_detail) + ". "
                      "Their PnL is muted (grey) below and **excluded from the Total**. "
@@ -2070,6 +2125,8 @@ def render_risk():
                "its close/last trade, so its PnL is the completed-session move and won't tick) · "
                "**⚪ prev-close** (only yesterday's close) · "
                "**🟡 stale** (a mark from an earlier day) · **⚪ settled** (IBKR Flex settlement) · "
+               "**≈ Δ-est** (option PnL ≈ delta × underlying move off the vol surfaces — first order "
+               "only, no gamma/vega/theta) · "
                "**✖ no mark**. Only 🟢/🕒/🧊 current marks are coloured and counted in the **Total**; "
                "the rest are greyed so old figures are never mistaken for a current intraday PnL.  ·  "
                "**Futures PnL** = live IBKR TWS price × position vs the **close N business days ago** "

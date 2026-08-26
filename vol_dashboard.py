@@ -885,10 +885,6 @@ def _split_normal_curve(src: str, mkt: str, tenor_days: int, mkinfo: dict):
     iv × F × √T). Returns {F, xs, pdf (skewed), sym (ATM-only), s_put, s_call, s_atm,
     unit} or None when ATM/both wings/future price are missing. Reuses the cached curve
     builders via _load_market (no new fetches)."""
-    F = mkinfo.get("fut")
-    if F is None or not math.isfinite(float(F)) or float(F) <= 0:
-        return None
-    F = float(F)
     curve, _td, _err = _load_market(src, mkt)
     if not curve:
         return None
@@ -901,6 +897,16 @@ def _split_normal_curve(src: str, mkt: str, tenor_days: int, mkinfo: dict):
                if r.get("dte") is not None and r.get(key) is not None
                and math.isfinite(r.get(key))]
         return _interp_pairs(prs, tenor_days) if len(prs) >= 2 else None
+
+    # Centre = the TENOR's own forward, interpolated from the per-expiry F
+    # column — NOT the front future (Rajat 2026-08-25: gold in $110 contango
+    # put a 3m distribution on the Oct future). Front future is the fallback.
+    F = _interp_key("F")
+    if F is None:
+        F = mkinfo.get("fut")
+    if F is None or not math.isfinite(float(F)) or float(F) <= 0:
+        return None
+    F = float(F)
 
     atm_pv = _interp_key("atm_iv")
     cw_pv = _interp_key("call_wing_iv")
