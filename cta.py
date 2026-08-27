@@ -201,9 +201,9 @@ def _compute_signals(tickers, tsmom_days, ma_fast, ma_slow, donchian_n, ewma_spa
         # 252d burn-in — slightly shorter trailing sample than the chart's
         # 3y+ fetch, so the two can differ by a few hundredths.
         try:
-            _pos = _ensemble_position(
-                close, 0.10,
-                weights=_ENSEMBLE_WEIGHTS["Slow-tilted (10/20/30/40)"])
+            _w, _vbs = _ENSEMBLE_WEIGHTS["Slow-tilted (10/20/30/40)"]
+            _pos = _ensemble_position(close, 0.10, weights=_w,
+                                      vol_by_speed=_vbs)
             _zs = ((_pos - _pos.rolling(252, min_periods=126).mean())
                    / _pos.rolling(252, min_periods=126).std().replace(0, np.nan)
                    ).dropna()
@@ -737,18 +737,22 @@ _ZCOLORS = ["#1E3A8A", "#2563EB", "#60A5FA", "#0E7490", "#94A3B8", "#334155",
 
 
 _ENSEMBLE_WEIGHTS = {
-    # per-speed weights for (21, 63, 126, 252)d. Slow-tilted mirrors where
-    # trend-fund AUM actually sits (3-12m signals dominate; fast = small
-    # sleeve) — Rajat 2026-08-26: default. Sum needn't be 1 (normalised).
-    "Slow-tilted (10/20/30/40)": (0.10, 0.20, 0.30, 0.40),
-    "Equal": (0.25, 0.25, 0.25, 0.25),
-    "Fast-tilted (40/30/20/10)": (0.40, 0.30, 0.20, 0.10),
+    # label: (per-speed weights for (21, 63, 126, 252)d, vol_by_speed).
+    # Slow-tilted mirrors where trend-fund AUM actually sits (3-12m signals
+    # dominate; fast = small sleeve) — Rajat 2026-08-26: default. X-slow
+    # (Rajat 2026-08-28): only the 6m/12m models, each sized off its OWN
+    # horizon's realised vol (not the common 21d) — sizing as slow as the
+    # signals. Sums needn't be 1 (normalised).
+    "Slow-tilted (10/20/30/40)": ((0.10, 0.20, 0.30, 0.40), False),
+    "Equal": ((0.25, 0.25, 0.25, 0.25), False),
+    "Fast-tilted (40/30/20/10)": ((0.40, 0.30, 0.20, 0.10), False),
+    "X-slow (126/252) vol-wtd": ((0.0, 0.0, 0.5, 0.5), True),
 }
 
 
 def _ensemble_position(close: pd.Series, vol_tgt: float,
                        speeds=(21, 63, 126, 252),
-                       weights=None) -> pd.Series:
+                       weights=None, vol_by_speed: bool = False) -> pd.Series:
     """Multi-speed CTA positioning proxy (Rajat 2026-08-26, after Citadel's
     'collection of trend-following frameworks with varying adjustment
     speeds'): at each speed L, a TSMOM sign and a vol-normalised EWMA sign,
@@ -761,15 +765,26 @@ def _ensemble_position(close: pd.Series, vol_tgt: float,
         weights = (1.0,) * len(speeds)
     wsum = float(sum(weights)) or 1.0
     rets = close.pct_change()
-    rvol = rets.rolling(21).std()
-    rvol_ann = (rvol * math.sqrt(252)).replace(0, np.nan)
-    scale = vol_tgt / rvol_ann
+    rvol = rets.rolling(21).std().replace(0, np.nan)   # signal norm stays 21d
+    scale_21 = vol_tgt / (rvol * math.sqrt(252))
     pos = pd.Series(0.0, index=close.index)
     for L, w in zip(speeds, weights):
-        ts = np.sign(close.pct_change(L).fillna(0))
-        ew = np.sign((rets.ewm(span=L, adjust=False).mean()
-                      / rvol.replace(0, np.nan)).fillna(0))
-        pos = pos + w * (ts + ew) / 2.0 * scale
+        if not w:
+            continue
+        if vol_by_speed:                   # size off the horizon's own vol
+            scale = vol_tgt / (rets.rolling(L).std()
+                               * math.sqrt(252)).replace(0, np.nan)
+        else:
+            scale = scale_21
+        # CONTINUOUS responses (Rajat 2026-08-28 — hard sign() made the
+        # 2-speed X-slow book jump 25% per flip at trend inflections, e.g.
+        # US30y Jun23-Jun24 with 9 zero-crossings of the 126d return):
+        # trend t-stat clipped to ±2 and scaled to ±1, so positions build
+        # and fade through zero instead of snapping.
+        ts = (close.pct_change(L) / (rvol * math.sqrt(L))).clip(-2, 2) / 2.0
+        ew = (rets.ewm(span=L, adjust=False).mean() / rvol
+              * math.sqrt(L / 2.0)).clip(-2, 2) / 2.0
+        pos = pos + w * (ts.fillna(0) + ew.fillna(0)) / 2.0 * scale
     return pos / wsum
 
 
@@ -1158,23 +1173,29 @@ def render_cta():
                                    "in the Multi-speed ensemble basis (ignored "
                                    "for the other bases). Slow-tilted ≈ where "
                                    "trend-fund AUM sits.")
-    _zwin = zc4.selectbox("z window", [126, 252, 504], index=1, key="_cta_z_win",
-                          format_func=lambda x: {126: "6m", 252: "1y", 504: "2y"}[x])
-    _zspan = zc5.selectbox("Chart span", [1, 2, 3], index=1, key="_cta_z_span",
+    _zwin = zc4.selectbox("z window", [126, 252, 504, 1260, 2520], index=1,
+                          key="_cta_z_win",
+                          format_func=lambda x: {126: "6m", 252: "1y",
+                                                 504: "2y", 1260: "5y",
+                                                 2520: "10y"}[x])
+    _zspan = zc5.selectbox("Chart span", [1, 2, 3, 5, 10], index=1,
+                           key="_cta_z_span",
                            format_func=lambda x: f"{x}y")
     if _zsel:
         _tk_by_name = {a["name"]: a["ticker"] for a in assets}
         _zseries, _zrsi = {}, {}
         with st.spinner("Computing positioning history…"):
             for _nm in _zsel:
+                _need = _zspan + max(1, _zwin // 252) + 1
+                _yrs = next((k for k in (3, 5, 7, 10, 15, 20) if k >= _need), 20)
                 _h = _hist_signals(_tk_by_name[_nm], tsmom_lb, ma_fast, ma_slow,
-                                   don_n, ewma_sp,
-                                   years=min(_zspan + max(1, _zwin // 252) + 1, 10))
+                                   don_n, ewma_sp, years=_yrs)
                 if _h.empty:
                     continue
                 if _zbasis.startswith("Multi"):
+                    _w, _vbs = _ENSEMBLE_WEIGHTS[_zwts_lbl]
                     _s = _ensemble_position(_h["close"], vol_tgt,
-                                            weights=_ENSEMBLE_WEIGHTS[_zwts_lbl])
+                                            weights=_w, vol_by_speed=_vbs)
                 elif _zbasis.startswith("Risk"):
                     _s = (_h["combined"]
                           * (vol_tgt / _h["rvol_ann"].replace(0, np.nan)))
@@ -1189,7 +1210,8 @@ def render_cta():
                     _zseries[_nm] = _z
                     _zrsi[_nm] = _h["rsi30"].reindex(_z.index).dropna()
         if _zseries:
-            _zw_lbl = {126: "6m", 252: "1y", 504: "2y"}[_zwin]
+            _zw_lbl = {126: "6m", 252: "1y", 504: "2y", 1260: "5y",
+                       2520: "10y"}[_zwin]
             st.plotly_chart(_plot_positioning_z(_zseries, _zw_lbl, _zrsi),
                             use_container_width=True)
             st.caption(
