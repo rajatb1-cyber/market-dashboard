@@ -1485,7 +1485,8 @@ def render_stir():
                 step=1, key="stir_port",
             )
 
-    tab_g3, tab_eur, tab_son, tab_sofr = st.tabs(["G3", "Euribor", "SONIA", "SOFR"])
+    tab_g3, tab_eur, tab_son, tab_sofr, tab_meet = st.tabs(
+        ["G3", "Euribor", "SONIA", "SOFR", "📅 Meetings"])
 
     with tab_g3:
         _render_g3(host, int(port))
@@ -1498,3 +1499,8 @@ def render_stir():
 
     with tab_sofr:
         _render_curve(host, int(port), "SOFR", "sofr")
+
+    with tab_meet:
+        # ZQ/EON via Databento; BoJ leg (OSE TOA3M) via the shared IBKR conn
+        from stir_meetings import render_meetings
+        render_meetings(host, int(port))

@@ -195,6 +195,22 @@ def _compute_signals(tickers, tsmom_days, ma_fast, ma_slow, donchian_n, ewma_spa
         except Exception:
             rsi14 = float("nan")
 
+        # Multi-speed ensemble positioning z (slow-tilted weights) — table
+        # column (Rajat 2026-08-26). z is invariant to the vol-target scalar.
+        # _raw_daily's 670d window gives ~200d of position history after the
+        # 252d burn-in — slightly shorter trailing sample than the chart's
+        # 3y+ fetch, so the two can differ by a few hundredths.
+        try:
+            _pos = _ensemble_position(
+                close, 0.10,
+                weights=_ENSEMBLE_WEIGHTS["Slow-tilted (10/20/30/40)"])
+            _zs = ((_pos - _pos.rolling(252, min_periods=126).mean())
+                   / _pos.rolling(252, min_periods=126).std().replace(0, np.nan)
+                   ).dropna()
+            ens_z = float(_zs.iloc[-1]) if len(_zs) else float("nan")
+        except Exception:
+            ens_z = float("nan")
+
         rows.append({
             "ticker":    tkr,
             "tsmom":     _tsmom(close, tsmom_days),
@@ -207,6 +223,7 @@ def _compute_signals(tickers, tsmom_days, ma_fast, ma_slow, donchian_n, ewma_spa
             "ma_raw":    ma_raw,
             "don_raw":   don_raw,
             "ewma_raw":  ewma_raw,
+            "ens_z":     ens_z,
         })
     return pd.DataFrame(rows).set_index("ticker") if rows else pd.DataFrame()
 
@@ -654,6 +671,20 @@ def _rsi_cell(rsi):
     else:           col = "#94A3B8"
     return f'<span style="color:{col};font-weight:600">{rsi:.1f}</span>'
 
+def _ensz_cell(z):
+    """Multi-speed ensemble positioning z (slow-tilted): grey when normal,
+    amber ≥1σ, red ≥2σ — |z| is the stretch, sign is the trend direction."""
+    if z is None or not math.isfinite(z):
+        return '<span style="color:#CBD5E1">—</span>'
+    if abs(z) >= 2:
+        c, w = "#DC2626", 700
+    elif abs(z) >= 1:
+        c, w = "#B45309", 700
+    else:
+        c, w = "#64748B", 500
+    return f'<span style="color:{c};font-weight:{w};font-size:11px">{z:+.2f}</span>'
+
+
 def _norm_score_cell(ns):
     if not math.isfinite(ns):
         return '<span style="color:#94A3B8">—</span>'
@@ -698,6 +729,111 @@ def _total_score_cell(total_400, old_sum):
 
 
 # ── Main render ─────────────────────────────────────────────────────────────────
+
+# ── Positioning z-score chart (Rajat 2026-08-26, styled after Citadel Sec's
+# "CTA Simulation Implies Long End Positioning is Stretched") ────────────────
+_ZCOLORS = ["#1E3A8A", "#2563EB", "#60A5FA", "#0E7490", "#94A3B8", "#334155",
+            "#7C3AED", "#B45309"]
+
+
+_ENSEMBLE_WEIGHTS = {
+    # per-speed weights for (21, 63, 126, 252)d. Slow-tilted mirrors where
+    # trend-fund AUM actually sits (3-12m signals dominate; fast = small
+    # sleeve) — Rajat 2026-08-26: default. Sum needn't be 1 (normalised).
+    "Slow-tilted (10/20/30/40)": (0.10, 0.20, 0.30, 0.40),
+    "Equal": (0.25, 0.25, 0.25, 0.25),
+    "Fast-tilted (40/30/20/10)": (0.40, 0.30, 0.20, 0.10),
+}
+
+
+def _ensemble_position(close: pd.Series, vol_tgt: float,
+                       speeds=(21, 63, 126, 252),
+                       weights=None) -> pd.Series:
+    """Multi-speed CTA positioning proxy (Rajat 2026-08-26, after Citadel's
+    'collection of trend-following frameworks with varying adjustment
+    speeds'): at each speed L, a TSMOM sign and a vol-normalised EWMA sign,
+    each vol-scaled into a position (× vol_tgt/realised vol); weighted sum
+    across speeds (weights ~ industry AUM by default), normalised to a
+    per-unit-weight average. Continuous-ish level series that can make fresh
+    extremes even when the slow signal is saturated — unlike the bounded
+    4-signal `combined`."""
+    if weights is None:
+        weights = (1.0,) * len(speeds)
+    wsum = float(sum(weights)) or 1.0
+    rets = close.pct_change()
+    rvol = rets.rolling(21).std()
+    rvol_ann = (rvol * math.sqrt(252)).replace(0, np.nan)
+    scale = vol_tgt / rvol_ann
+    pos = pd.Series(0.0, index=close.index)
+    for L, w in zip(speeds, weights):
+        ts = np.sign(close.pct_change(L).fillna(0))
+        ew = np.sign((rets.ewm(span=L, adjust=False).mean()
+                      / rvol.replace(0, np.nan)).fillna(0))
+        pos = pos + w * (ts + ew) / 2.0 * scale
+    return pos / wsum
+
+
+def _plot_positioning_z(series_by_name: dict, zwin_lbl: str,
+                        rsi_by_name: dict | None = None) -> go.Figure:
+    """Multi-asset overlay of positioning z-scores (dotted ±1σ guides, zero
+    line, right-edge last-value labels, most stretched reading in red) with a
+    30d-RSI panel below for the same assets (Rajat 2026-08-26)."""
+    has_rsi = bool(rsi_by_name)
+    fig = make_subplots(
+        rows=2 if has_rsi else 1, cols=1, shared_xaxes=True,
+        row_heights=[0.68, 0.32] if has_rsi else None,
+        vertical_spacing=0.07,
+        subplot_titles=(None, "RSI (30d)") if has_rsi else None)
+    ext_name, ext_val = None, 0.0
+    for i, (name, s) in enumerate(series_by_name.items()):
+        col = _ZCOLORS[i % len(_ZCOLORS)]
+        fig.add_trace(go.Scatter(
+            x=s.index, y=s.values, name=name, mode="lines",
+            line=dict(color=col, width=1.6),
+            hovertemplate=f"{name}: %{{y:.2f}}σ<extra></extra>"),
+            row=1, col=1)
+        last = float(s.iloc[-1])
+        if abs(last) > abs(ext_val):
+            ext_name, ext_val = name, last
+        fig.add_annotation(x=s.index[-1], y=last, xanchor="left", xshift=4,
+                           text=f"{last:+.2f}", showarrow=False,
+                           font=dict(size=10, color=col), row=1, col=1)
+        rs = (rsi_by_name or {}).get(name)
+        if rs is not None and len(rs):
+            fig.add_trace(go.Scatter(
+                x=rs.index, y=rs.values, name=f"{name} RSI30", mode="lines",
+                line=dict(color=col, width=1.2), showlegend=False,
+                hovertemplate=f"{name} RSI30: %{{y:.0f}}<extra></extra>"),
+                row=2, col=1)
+    if ext_name is not None:      # re-annotate the most stretched in red bold
+        s = series_by_name[ext_name]
+        fig.add_annotation(x=s.index[-1], y=float(s.iloc[-1]), xanchor="left",
+                           xshift=4, yshift=12,
+                           text=f"<b>{float(s.iloc[-1]):+.2f}</b>",
+                           showarrow=False, font=dict(size=11, color="#DC2626"),
+                           row=1, col=1)
+    for lv in (1.0, -1.0):
+        fig.add_hline(y=lv, line=dict(color="#DC2626", width=1, dash="dot"),
+                      row=1, col=1)
+    fig.add_hline(y=0, line=dict(color="#94A3B8", width=1), row=1, col=1)
+    if has_rsi:
+        fig.add_hline(y=50, line=dict(color="#CBD5E1", width=1), row=2, col=1)
+        for lv in (30, 70):
+            fig.add_hline(y=lv, line=dict(color="#94A3B8", width=1, dash="dot"),
+                          row=2, col=1)
+        fig.update_yaxes(range=[0, 100], row=2, col=1)
+    fig.update_layout(
+        height=560 if has_rsi else 430, template="plotly_white",
+        margin=dict(l=10, r=60, t=30, b=10),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0,
+                    font=dict(size=11)),
+        hovermode="x unified",
+    )
+    fig.update_yaxes(title_text=f"z-score vs {zwin_lbl} history", row=1, col=1)
+    fig.update_xaxes(showgrid=False)
+    fig.update_yaxes(gridcolor="#EEF1F6", zeroline=False)
+    return fig
+
 
 @st.fragment
 def render_cta():
@@ -768,7 +904,7 @@ def render_cta():
     sigs["total_score"] = sigs[["tsmom_score","ma_score","don_score","ewma_score"]].sum(axis=1)
 
     # ── Sort controls ─────────────────────────────────────────────────────────
-    _SORT_OPTS = ["Asset", "Mom.Score", "Norm.Score", "RSI (14)", "Vol (21d)", "TSMOM", "MA Cross", "Breakout", "EWMA", "Risk Alloc"]
+    _SORT_OPTS = ["Asset", "Mom.Score", "Norm.Score", "Ens.Z", "RSI (14)", "Vol (21d)", "TSMOM", "MA Cross", "Breakout", "EWMA", "Risk Alloc"]
     c_sort, c_dir = st.columns([3, 1])
     with c_sort:
         sort_col = st.selectbox("Sort by", _SORT_OPTS, key="_cta_sort_col",
@@ -791,6 +927,7 @@ def render_cta():
     lbl_tsmom = {21:"1m",63:"3m",126:"6m",252:"12m"}[tsmom_lb]
     _col_sort_map = {
         "Asset": "Asset", "Mom.Score": "Mom.Score", "Norm.Score": "Norm.Score",
+        "Ens.Z": "Ens.Z",
         "RSI (14)": "RSI (14)", "Vol (21d)": "Vol (21d)",
         f"TSMOM {lbl_tsmom}": "TSMOM",
         f"{ma_fast}/{ma_slow} EMA": "MA Cross",
@@ -811,6 +948,7 @@ def render_cta():
         f'{_hdr("Class", th)}'
         f'{_hdr("Mom.Score", th)}'
         f'{_hdr("Norm.Score", th)}'
+        f'{_hdr("Ens.Z", th)}'
         f'{_hdr("RSI (14)", th)}'
         f'{_hdr("Vol (21d)", th)}'
         f'{_hdr(f"TSMOM {lbl_tsmom}", th)}'
@@ -847,10 +985,12 @@ def render_cta():
             norm_score = float("nan")
         badge = (f'<span style="background:{bg};color:{fg};font-size:10px;'
                  f'font-weight:600;padding:2px 6px;border-radius:4px">{cls}</span>')
+        _ez = (float(row["ens_z"]) if "ens_z" in row.index else float("nan"))
         row_data.append({
             "name": name, "cls": cls, "badge": badge,
             "total_400": total_400, "old_sum": old_sum,
             "vol": vol, "rsi14": rsi14, "norm_score": norm_score,
+            "ens_z": _ez,
             "sc1": sc1, "sc2": sc2, "sc3": sc3, "sc4": sc4,
             "s1": s1, "s2": s2, "s3": s3, "s4": s4, "risk": risk,
         })
@@ -859,6 +999,7 @@ def render_cta():
         "Asset":       lambda r: r["name"].lower(),
         "Mom.Score":   lambda r: r["total_400"],
         "Norm.Score":  lambda r: r["norm_score"] if math.isfinite(r["norm_score"]) else -1.0,
+        "Ens.Z":       lambda r: abs(r["ens_z"]) if math.isfinite(r["ens_z"]) else -1.0,
         "RSI (14)":    lambda r: r["rsi14"] if math.isfinite(r["rsi14"]) else -1.0,
         "Vol (21d)":  lambda r: r["vol"] if math.isfinite(r["vol"]) else -1.0,
         "TSMOM":      lambda r: r["sc1"],
@@ -877,6 +1018,7 @@ def render_cta():
             f'<td style="{td}">{rd["badge"]}</td>'
             f'<td style="{td}">{_total_score_cell(rd["total_400"], rd["old_sum"])}</td>'
             f'<td style="{td}">{_norm_score_cell(rd["norm_score"])}</td>'
+            f'<td style="{td}">{_ensz_cell(rd["ens_z"])}</td>'
             f'<td style="{td}">{_rsi_cell(rd["rsi14"])}</td>'
             f'<td style="{td}">{_vol_fmt(rd["vol"])}</td>'
             f'<td style="{td}">{_signal_score_cell(rd["sc1"], rd["s1"])}</td>'
@@ -906,7 +1048,9 @@ def render_cta():
             f"**{sum(s == 0 for s in all_old)}** neutral &nbsp;·&nbsp; "
             f"Score = cross-sectional rank 1–100 per signal, total 4–400 "
             f"(≥300 strongly bullish, ≤100 strongly bearish) &nbsp;·&nbsp; "
-            f"Risk alloc = signal × ({vol_tgt*100:.0f}% target vol / realised vol)"
+            f"Risk alloc = signal × ({vol_tgt*100:.0f}% target vol / realised vol) &nbsp;·&nbsp; "
+            f"Ens.Z = multi-speed ensemble positioning z (slow-tilted weights, 1y window; "
+            f"amber ≥1σ, red ≥2σ — sortable by |z| to surface stretched trends)"
         )
 
     # ── Signal history chart ──────────────────────────────────────────────────
@@ -988,3 +1132,76 @@ def render_cta():
                 vol_tgt=vol_tgt,
             )
             st.plotly_chart(fig, use_container_width=True)
+
+    # ── Positioning z-score — multi-asset, Citadel-style ─────────────────────
+    st.divider()
+    st.markdown("##### Positioning z-score — how stretched is the trend book?")
+    zc1, zc2, zc3, zc4, zc5 = st.columns([2.7, 1.3, 1.3, 0.9, 0.9])
+    _zsel = zc1.multiselect(
+        "Assets", [a["name"] for a in assets], key="_cta_z_assets",
+        help="Overlay each asset's simulated CTA positioning as a z-score vs "
+             "its own trailing history — stretched readings (beyond ±1σ) "
+             "imply asymmetric unwind risk, à la the sell-side CTA charts.")
+    _zbasis = zc2.selectbox("Basis", ["Multi-speed ensemble",
+                                      "Risk allocation (sized)",
+                                      "Combined signal"],
+                            key="_cta_z_basis",
+                            help="Multi-speed ensemble = TSMOM + EWMA signals at "
+                                 "21/63/126/252d, each vol-scaled into a position "
+                                 "and summed (closest to sell-side CTA sims — can "
+                                 "make fresh extremes when slow signals saturate). "
+                                 "Risk allocation = the tab's combined signal × "
+                                 "(vol target / realised vol). Combined = raw ±1.")
+    _zwts_lbl = zc3.selectbox("Speed weights", list(_ENSEMBLE_WEIGHTS),
+                              key="_cta_z_wts",
+                              help="How the 21/63/126/252d models are weighted "
+                                   "in the Multi-speed ensemble basis (ignored "
+                                   "for the other bases). Slow-tilted ≈ where "
+                                   "trend-fund AUM sits.")
+    _zwin = zc4.selectbox("z window", [126, 252, 504], index=1, key="_cta_z_win",
+                          format_func=lambda x: {126: "6m", 252: "1y", 504: "2y"}[x])
+    _zspan = zc5.selectbox("Chart span", [1, 2, 3], index=1, key="_cta_z_span",
+                           format_func=lambda x: f"{x}y")
+    if _zsel:
+        _tk_by_name = {a["name"]: a["ticker"] for a in assets}
+        _zseries, _zrsi = {}, {}
+        with st.spinner("Computing positioning history…"):
+            for _nm in _zsel:
+                _h = _hist_signals(_tk_by_name[_nm], tsmom_lb, ma_fast, ma_slow,
+                                   don_n, ewma_sp,
+                                   years=min(_zspan + max(1, _zwin // 252) + 1, 10))
+                if _h.empty:
+                    continue
+                if _zbasis.startswith("Multi"):
+                    _s = _ensemble_position(_h["close"], vol_tgt,
+                                            weights=_ENSEMBLE_WEIGHTS[_zwts_lbl])
+                elif _zbasis.startswith("Risk"):
+                    _s = (_h["combined"]
+                          * (vol_tgt / _h["rvol_ann"].replace(0, np.nan)))
+                else:
+                    _s = _h["combined"]
+                _mu = _s.rolling(_zwin, min_periods=_zwin // 2).mean()
+                _sd = _s.rolling(_zwin, min_periods=_zwin // 2).std().replace(0, np.nan)
+                _z = ((_s - _mu) / _sd).dropna()
+                _cut = pd.Timestamp(date.today() - timedelta(days=_zspan * 365))
+                _z = _z[_z.index >= _cut]
+                if len(_z):
+                    _zseries[_nm] = _z
+                    _zrsi[_nm] = _h["rsi30"].reindex(_z.index).dropna()
+        if _zseries:
+            _zw_lbl = {126: "6m", 252: "1y", 504: "2y"}[_zwin]
+            st.plotly_chart(_plot_positioning_z(_zseries, _zw_lbl, _zrsi),
+                            use_container_width=True)
+            st.caption(
+                "z-score of the simulated CTA position vs its own trailing "
+                f"{_zw_lbl} (mean/σ). Beyond the dotted ±1σ the positioning is "
+                "stretched: further moves in the trend direction add little, "
+                "while a reversal forces a mechanical unwind — the red figure "
+                "marks the most stretched reading. Rates assets are in YIELD "
+                "direction (negative = stretched short yields = long duration "
+                "crowd). Uses the parameter set from ⚙ above.")
+        else:
+            st.info("No usable history for the selected assets.")
+    else:
+        st.caption("Pick assets above to draw the chart — e.g. the rates "
+                   "complex to see how stretched the duration trend book is.")

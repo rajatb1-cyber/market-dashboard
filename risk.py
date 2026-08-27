@@ -1128,6 +1128,65 @@ def _agg_table_html(rows: list) -> str:
             f"font-family:monospace'><thead>{header}</thead><tbody>{body}</tbody></table></div>")
 
 
+_AGG_INTRADAY = ("live", "delayed", "closed")   # authoritative mark flags
+
+
+def _class_pnl_html(rows: list) -> str:
+    """Total PnL incl. option Δ-estimates, broken by asset class (Rajat
+    2026-08-26). Same inclusion rules as the table totals: intraday-marked
+    rows + Δ-est option rows; stale/settled excluded. Classes containing any
+    estimate are shown grey with ≈ (mixed mark quality), pure-intraday
+    classes keep PnL colouring."""
+    th, th_l, td, td_l, tf, tf_l = _VTH, _VTHL, _VTD, _VTDL, _VTF, _VTFL
+    by_cls: dict = {}
+    for x in rows:
+        flag = x[12] if len(x) > 12 else "settled"
+        if flag not in _AGG_INTRADAY and flag != "dest":
+            continue
+        c = by_cls.setdefault(x[2] or "Other",
+                              {"p": [0.0, 0.0, 0.0], "est": False, "n": 0})
+        for i, xi in enumerate((6, 7, 8)):
+            c["p"][i] += (x[xi] or 0.0)
+        c["est"] = c["est"] or flag == "dest"
+        c["n"] += 1
+    if not by_cls:
+        return ""
+    order = ["Rates", "FX", "Equities", "Commod", "Crypto"]
+    classes = ([c for c in order if c in by_cls]
+               + [c for c in by_cls if c not in order])
+    h = (f"<tr><th style='{th_l}'>Asset class</th><th style='{th}'>1d PnL</th>"
+         f"<th style='{th}'>3d PnL</th><th style='{th}'>5d PnL</th>"
+         f"<th style='{th}'>rows</th></tr>")
+    b = ""
+    tot = [0.0, 0.0, 0.0]
+
+    def _cell(v, est):
+        if est:
+            return f"<td style='{td};color:#64748B'>≈ ${v:,.0f}</td>"
+        return f"<td style='{td};color:{_pnl_color(v)}'>${v:,.0f}</td>"
+    any_est = False
+    for cls in classes:
+        c = by_cls[cls]
+        any_est = any_est or c["est"]
+        for i in range(3):
+            tot[i] += c["p"][i]
+        b += (f"<tr><td style='{td_l}'><b>{cls}</b>"
+              + (" <span style='color:#94A3B8;font-size:9px'>Δ-est</span>"
+                 if c["est"] else "")
+              + f"</td>{_cell(c['p'][0], c['est'])}{_cell(c['p'][1], c['est'])}"
+              f"{_cell(c['p'][2], c['est'])}"
+              f"<td style='{td};color:#94A3B8'>{c['n']}</td></tr>")
+    b += (f"<tr><td style='{tf_l}'>Total{' (incl. Δ-est)' if any_est else ''}</td>"
+          f"<td style='{tf}'>{'≈ ' if any_est else ''}${tot[0]:,.0f}</td>"
+          f"<td style='{tf}'>{'≈ ' if any_est else ''}${tot[1]:,.0f}</td>"
+          f"<td style='{tf}'>{'≈ ' if any_est else ''}${tot[2]:,.0f}</td>"
+          f"<td style='{tf}'></td></tr>")
+    return (f"<div style='overflow-x:auto;max-width:560px'>"
+            f"<b style='font-size:12px'>PnL by asset class · intraday + option Δ-est</b>"
+            f"<table style='border-collapse:collapse;width:100%;font-family:monospace'>"
+            f"<thead>{h}</thead><tbody>{b}</tbody></table></div>")
+
+
 _VTH  = ("background:#1E293B;color:#F8FAFC;font-size:11px;font-weight:600;"
          "padding:5px 8px;text-align:right")
 _VTHL = _VTH.replace("text-align:right", "text-align:left")
@@ -2120,6 +2179,10 @@ def render_risk():
                      "Click **🔃 Ref PnL** with IBKR TWS running to refresh (15-min delayed by default).")
             (st.warning if _n_live == 0 else st.info)(_bmsg)
         st.markdown(_agg_table_html(_agg), unsafe_allow_html=True)
+        _cls_html = _class_pnl_html(_agg)
+        if _cls_html:
+            st.markdown("<div style='height:8px'></div>" + _cls_html,
+                        unsafe_allow_html=True)
     st.caption("**Marks** column = where each row's PnL comes from: **🟢 live** (real-time, e.g. CME) · "
                "**🕒 15m** (15-min delayed) · **🌙 closed** (that contract's market is shut — priced off "
                "its close/last trade, so its PnL is the completed-session move and won't tick) · "
