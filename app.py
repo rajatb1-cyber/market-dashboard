@@ -693,8 +693,9 @@ def main():
     tab_charts, tab_macro, tab_news, tab_eq, tab_rates, tab_pred, tab_vol, tab_stir, tab_com, tab_rp = st.tabs(["📈  Charting", "📋  Macro", "📰  News", "🏦  Equities", "📈  Rates", "🎯  Prediction", "⚡  Volatility", "📉  STIR", "🛢️  Commodities", "💰  Risk & P&L"])
 
     with tab_macro:
-        sub_core, sub_watch, sub_cta, sub_corr, sub_econ, sub_ecal = \
+        sub_core, sub_watch, sub_cta, sub_ctap, sub_corr, sub_econ, sub_ecal = \
             st.tabs(["🧭 Core Markets", "📋 Watchlist", "📐 CTA Signals",
+                     "🧲 CTA Positioning",
                      "🔗 Correl", "🌍 Economic Data", "📅 Event Calendar"])
         with sub_core:
             if _tab_loaded("macro_core", "Core Markets"):
@@ -706,6 +707,10 @@ def main():
         with sub_cta:
             if _tab_loaded("macro_cta", "CTA Signals"):
                 render_cta()
+        with sub_ctap:
+            if _tab_loaded("macro_ctap", "CTA Positioning"):
+                from cta import render_cta_positioning
+                render_cta_positioning()
         with sub_corr:
             if _tab_loaded("correl", "Correlations"):
                 from correl import render_correl

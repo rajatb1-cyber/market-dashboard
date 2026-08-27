@@ -232,7 +232,7 @@ def _compute_signals(tickers, tsmom_days, ma_fast, ma_slow, donchian_n, ewma_spa
 
 # Some tickers (e.g. ^US2YT) only work via Ticker.history(), not yf.download().
 # Mirror the three-level fallback used by _raw_daily in watchlist.py.
-_YF_PERIOD_FOR_YEARS = {1: "2y", 2: "5y", 3: "5y", 5: "5y", 7: "10y", 10: "10y", 15: "max", 20: "max"}
+_YF_PERIOD_FOR_YEARS = {1: "2y", 2: "5y", 3: "5y", 5: "5y", 7: "10y", 10: "10y", 15: "max", 20: "max", 30: "max"}
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
@@ -752,7 +752,8 @@ _ENSEMBLE_WEIGHTS = {
 
 def _ensemble_position(close: pd.Series, vol_tgt: float,
                        speeds=(21, 63, 126, 252),
-                       weights=None, vol_by_speed: bool = False) -> pd.Series:
+                       weights=None, vol_by_speed: bool = False,
+                       sized: bool = True) -> pd.Series:
     """Multi-speed CTA positioning proxy (Rajat 2026-08-26, after Citadel's
     'collection of trend-following frameworks with varying adjustment
     speeds'): at each speed L, a TSMOM sign and a vol-normalised EWMA sign,
@@ -771,7 +772,9 @@ def _ensemble_position(close: pd.Series, vol_tgt: float,
     for L, w in zip(speeds, weights):
         if not w:
             continue
-        if vol_by_speed:                   # size off the horizon's own vol
+        if not sized:                      # signal-only: direction crowding,
+            scale = 1.0                    # no vol-targeting size channel
+        elif vol_by_speed:                 # size off the horizon's own vol
             scale = vol_tgt / (rets.rolling(L).std()
                                * math.sqrt(252)).replace(0, np.nan)
         else:
@@ -789,10 +792,14 @@ def _ensemble_position(close: pd.Series, vol_tgt: float,
 
 
 def _plot_positioning_z(series_by_name: dict, zwin_lbl: str,
-                        rsi_by_name: dict | None = None) -> go.Figure:
+                        rsi_by_name: dict | None = None,
+                        overlay_by_name: dict | None = None) -> go.Figure:
     """Multi-asset overlay of positioning z-scores (dotted ±1σ guides, zero
     line, right-edge last-value labels, most stretched reading in red) with a
-    30d-RSI panel below for the same assets (Rajat 2026-08-26)."""
+    30d-RSI panel below for the same assets (Rajat 2026-08-26).
+    overlay_by_name: optional companion series per asset drawn DASHED in the
+    same colour (Rajat 2026-08-28: signal-only z next to the position z —
+    the gap between solid and dashed is the vol-sizing channel)."""
     has_rsi = bool(rsi_by_name)
     fig = make_subplots(
         rows=2 if has_rsi else 1, cols=1, shared_xaxes=True,
@@ -813,6 +820,14 @@ def _plot_positioning_z(series_by_name: dict, zwin_lbl: str,
         fig.add_annotation(x=s.index[-1], y=last, xanchor="left", xshift=4,
                            text=f"{last:+.2f}", showarrow=False,
                            font=dict(size=10, color=col), row=1, col=1)
+        ov = (overlay_by_name or {}).get(name)
+        if ov is not None and len(ov):
+            fig.add_trace(go.Scatter(
+                x=ov.index, y=ov.values, name=f"{name} signal-only",
+                mode="lines", showlegend=False,
+                line=dict(color=col, width=1.1, dash="dash"), opacity=0.75,
+                hovertemplate=f"{name} signal-only: %{{y:.2f}}σ<extra></extra>"),
+                row=1, col=1)
         rs = (rsi_by_name or {}).get(name)
         if rs is not None and len(rs):
             fig.add_trace(go.Scatter(
@@ -1148,9 +1163,38 @@ def render_cta():
             )
             st.plotly_chart(fig, use_container_width=True)
 
-    # ── Positioning z-score — multi-asset, Citadel-style ─────────────────────
-    st.divider()
-    st.markdown("##### Positioning z-score — how stretched is the trend book?")
+
+# ── CTA Positioning — its own Macro sub-tab (Rajat 2026-08-28: "make a
+# separate tab, call it CTA Positioning"). Signal params fixed at the tab
+# defaults (126/20/200/55/63); the z is scale-invariant to vol target. ──────
+@st.fragment
+def render_cta_positioning():
+    st.markdown("#### CTA Positioning — how stretched is the trend book?")
+    st.caption(
+        "Simulated trend-follower positioning per asset, z-scored against its "
+        "own trailing history — the sell-side 'CTA positioning' chart, on our "
+        "own engine. Solid = position z (direction × vol-targeted sizing); "
+        "dashed overlay = signal-only z (pure direction crowding); the gap is "
+        "the vol-sizing channel. RSI(30) below for the same assets."
+    )
+    tsmom_lb, ma_fast, ma_slow, don_n, ewma_sp, vol_tgt = 126, 20, 200, 55, 63, 0.10
+
+    cfg = load_config()
+    all_cs = _load_cs_json()
+    cs_name_map = {cs["id"]: cs["name"] for cs in all_cs}
+    sel_cs_ids = [cid for cid in cfg.get("custom_series_ids", []) if cid in cs_name_map]
+    all_assets = list(CTA_ASSETS) + [
+        {"name": cs_name_map[cid], "ticker": f"custom:{cid}", "class": "Custom"}
+        for cid in sel_cs_ids
+    ]
+    classes = sorted({a["class"] for a in all_assets})
+    sel_classes = st.multiselect("Asset classes", classes, default=classes,
+                                 key="_ctap_classes")
+    assets = [a for a in all_assets if a["class"] in sel_classes]
+    if not assets:
+        st.info("Select at least one asset class.")
+        return
+
     zc1, zc2, zc3, zc4, zc5 = st.columns([2.7, 1.3, 1.3, 0.9, 0.9])
     _zsel = zc1.multiselect(
         "Assets", [a["name"] for a in assets], key="_cta_z_assets",
@@ -1158,15 +1202,20 @@ def render_cta():
              "its own trailing history — stretched readings (beyond ±1σ) "
              "imply asymmetric unwind risk, à la the sell-side CTA charts.")
     _zbasis = zc2.selectbox("Basis", ["Multi-speed ensemble",
+                                      "Multi-speed signal-only",
                                       "Risk allocation (sized)",
                                       "Combined signal"],
                             key="_cta_z_basis",
-                            help="Multi-speed ensemble = TSMOM + EWMA signals at "
+                            help="Multi-speed ensemble = TSMOM + EWMA responses at "
                                  "21/63/126/252d, each vol-scaled into a position "
-                                 "and summed (closest to sell-side CTA sims — can "
-                                 "make fresh extremes when slow signals saturate). "
-                                 "Risk allocation = the tab's combined signal × "
-                                 "(vol target / realised vol). Combined = raw ±1.")
+                                 "and summed (closest to sell-side CTA sims; z "
+                                 "reflects BOTH trend direction and vol-driven "
+                                 "sizing — e.g. the 2017-18 low-vol extremes). "
+                                 "Signal-only = same responses UNSIZED — pure "
+                                 "direction crowding, immune to vol-regime "
+                                 "inflation. Risk allocation = the tab's combined "
+                                 "signal × (vol target / realised vol). "
+                                 "Combined = raw ±1.")
     _zwts_lbl = zc3.selectbox("Speed weights", list(_ENSEMBLE_WEIGHTS),
                               key="_cta_z_wts",
                               help="How the 21/63/126/252d models are weighted "
@@ -1178,16 +1227,28 @@ def render_cta():
                           format_func=lambda x: {126: "6m", 252: "1y",
                                                  504: "2y", 1260: "5y",
                                                  2520: "10y"}[x])
-    _zspan = zc5.selectbox("Chart span", [1, 2, 3, 5, 10], index=1,
+    _zspan = zc5.selectbox("Chart span", [1, 2, 3, 5, 10, 15, 20], index=1,
                            key="_cta_z_span",
                            format_func=lambda x: f"{x}y")
+    _zovl_on = st.checkbox(
+        "overlay signal-only z (dashed) — the solid/dashed gap is the "
+        "vol-sizing channel", value=True, key="_cta_z_ovl") \
+        if _zbasis == "Multi-speed ensemble" else False
     if _zsel:
         _tk_by_name = {a["name"]: a["ticker"] for a in assets}
-        _zseries, _zrsi = {}, {}
+        _zseries, _zrsi, _zovl = {}, {}, {}
+
+        def _zof(_s):
+            _mu = _s.rolling(_zwin, min_periods=_zwin // 2).mean()
+            _sd = _s.rolling(_zwin, min_periods=_zwin // 2).std().replace(0, np.nan)
+            _z = ((_s - _mu) / _sd).dropna()
+            _cut = pd.Timestamp(date.today() - timedelta(days=_zspan * 365))
+            return _z[_z.index >= _cut]
+
         with st.spinner("Computing positioning history…"):
             for _nm in _zsel:
                 _need = _zspan + max(1, _zwin // 252) + 1
-                _yrs = next((k for k in (3, 5, 7, 10, 15, 20) if k >= _need), 20)
+                _yrs = next((k for k in (3, 5, 7, 10, 15, 20, 30) if k >= _need), 30)
                 _h = _hist_signals(_tk_by_name[_nm], tsmom_lb, ma_fast, ma_slow,
                                    don_n, ewma_sp, years=_yrs)
                 if _h.empty:
@@ -1195,24 +1256,28 @@ def render_cta():
                 if _zbasis.startswith("Multi"):
                     _w, _vbs = _ENSEMBLE_WEIGHTS[_zwts_lbl]
                     _s = _ensemble_position(_h["close"], vol_tgt,
-                                            weights=_w, vol_by_speed=_vbs)
+                                            weights=_w, vol_by_speed=_vbs,
+                                            sized="signal-only" not in _zbasis)
+                    if _zovl_on:
+                        _z2 = _zof(_ensemble_position(
+                            _h["close"], vol_tgt, weights=_w,
+                            vol_by_speed=_vbs, sized=False))
+                        if len(_z2):
+                            _zovl[_nm] = _z2
                 elif _zbasis.startswith("Risk"):
                     _s = (_h["combined"]
                           * (vol_tgt / _h["rvol_ann"].replace(0, np.nan)))
                 else:
                     _s = _h["combined"]
-                _mu = _s.rolling(_zwin, min_periods=_zwin // 2).mean()
-                _sd = _s.rolling(_zwin, min_periods=_zwin // 2).std().replace(0, np.nan)
-                _z = ((_s - _mu) / _sd).dropna()
-                _cut = pd.Timestamp(date.today() - timedelta(days=_zspan * 365))
-                _z = _z[_z.index >= _cut]
+                _z = _zof(_s)
                 if len(_z):
                     _zseries[_nm] = _z
                     _zrsi[_nm] = _h["rsi30"].reindex(_z.index).dropna()
         if _zseries:
             _zw_lbl = {126: "6m", 252: "1y", 504: "2y", 1260: "5y",
                        2520: "10y"}[_zwin]
-            st.plotly_chart(_plot_positioning_z(_zseries, _zw_lbl, _zrsi),
+            st.plotly_chart(_plot_positioning_z(_zseries, _zw_lbl, _zrsi,
+                                                _zovl or None),
                             use_container_width=True)
             st.caption(
                 "z-score of the simulated CTA position vs its own trailing "
