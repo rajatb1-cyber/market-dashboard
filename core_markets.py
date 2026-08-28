@@ -45,6 +45,86 @@ import ta as ta_lib
 
 from vol_move import _rsi_cell          # shared RSI colour convention
 
+# ── CTA positioning z column (Rajat 2026-08-28: "add slow-tilted vol-wtd
+# 10y z next to RSI30"). Computed through the CTA engine's deep-history
+# fetchers — the board's own hist caches are ~1y, far too short for a 10y
+# window. CNBC yield codes map onto the CTA universe's tickers. ──────────────
+_ENSZ_YIELD = {
+    "US2Y": "^US2YT", "US5Y": "^FVX", "US10Y": "^TNX", "US30Y": "^TYX",
+    "DE2Y-DE": "^ECB2Y", "DE5Y-DE": "^ECB5Y", "DE10Y-DE": "^ECB10Y",
+    "DE30Y-DE": "^ECB30Y",
+    "UK2Y-GB": "^UK2YT", "UK5Y-GB": "^UK5YT", "UK10Y-GB": "^UK10YT",
+    "UK30Y-GB": "^UK30YT",
+    "JP2Y-JP": "^JPY2Y", "JP5Y-JP": "^JPY5Y", "JP10Y-JP": "^JPY10Y",
+    "JP30Y-JP": "^JPY30Y",
+}
+
+
+@st.cache_data(ttl=21600, show_spinner=False)
+def _ens_z10(tkr: str, rates: bool):
+    """Slow-tilted vol-wtd ensemble positioning z vs 10y — one value.
+    years=15 matches the positioning tab's fetch tier → shared cache."""
+    try:
+        import cta
+        h = cta._hist_signals(tkr, 126, 20, 200, 55, 63, years=15, rates=rates)
+        if h.empty or len(h) < 900:
+            return None
+        w, vbs = cta._ENSEMBLE_WEIGHTS["Slow-tilted vol-wtd"]
+        s = cta._ensemble_position(h["close"], 0.10, weights=w,
+                                   vol_by_speed=vbs, arithmetic=rates)
+        z = ((s - s.rolling(2520, min_periods=1260).mean())
+             / s.rolling(2520, min_periods=1260).std().replace(0, np.nan)
+             ).dropna()
+        return float(z.iloc[-1]) if len(z) else None
+    except Exception:
+        return None
+
+
+@st.cache_data(ttl=21600, show_spinner=False)
+def _ens_z10_sprd(tka: str, tkb: str):
+    """Positioning z for a curve spread row (long-leg minus short-leg, bp)."""
+    try:
+        import cta
+        ha = cta._hist_signals(tka, 126, 20, 200, 55, 63, years=15, rates=True)
+        hb = cta._hist_signals(tkb, 126, 20, 200, 55, 63, years=15, rates=True)
+        if ha.empty or hb.empty:
+            return None
+        sp = ((hb["close"] - ha["close"]) * 100.0).dropna()
+        if len(sp) < 900:
+            return None
+        w, vbs = cta._ENSEMBLE_WEIGHTS["Slow-tilted vol-wtd"]
+        s = cta._ensemble_position(sp, 0.10, weights=w, vol_by_speed=vbs,
+                                   arithmetic=True)
+        z = ((s - s.rolling(2520, min_periods=1260).mean())
+             / s.rolling(2520, min_periods=1260).std().replace(0, np.nan)
+             ).dropna()
+        return float(z.iloc[-1]) if len(z) else None
+    except Exception:
+        return None
+
+
+def _ensz_html(z):
+    """CTA tab's Ens.Z colour convention: grey normal, amber ≥1σ, red ≥2σ."""
+    try:
+        from cta import _ensz_cell
+        return _ensz_cell(z)
+    except Exception:
+        return "<span style='color:#CBD5E1'>—</span>"
+
+
+def _ensz_for_row(kind: str, tkr: str):
+    """Route a board row to its positioning z (None → em-dash cell)."""
+    if kind == "cnbc":
+        m = _ENSZ_YIELD.get(tkr)
+        return _ens_z10(m, True) if m else None
+    if kind == "sprd":
+        a, b = tkr.split("|")
+        ma, mb = _ENSZ_YIELD.get(a), _ENSZ_YIELD.get(b)
+        return _ens_z10_sprd(ma, mb) if ma and mb else None
+    if kind == "px":
+        return _ens_z10(tkr, False)
+    return None                       # synth (BBDXY) — no deep history
+
 # ── Spec ─────────────────────────────────────────────────────────────────────
 # (group, display name, ticker/symbol, kind)  kind: px = yfinance price row,
 # cnbc = CNBC government bond yield row
@@ -897,7 +977,7 @@ def render_core_markets():
         if lvl is None:
             row = (f"<tr><td style='{_TD}'></td>"
                    f"<td style='{_TD}'>{name}</td><td style='{_TD};"
-                   f"color:{_MUT}' colspan='11'>no data ({tkr})</td></tr>")
+                   f"color:{_MUT}' colspan='12'>no data ({tkr})</td></tr>")
             recs.append((grp, row, {}))
             continue
         if ts is not None:
@@ -919,6 +999,8 @@ def render_core_markets():
                f"{_rsi_cell(rsi14)}</td>"
                f"<td style='{_TD};text-align:right;background:__BG__'>"
                f"{_rsi_cell(rsi30)}</td>"
+               f"<td style='{_TD};text-align:right;background:__BG__'>"
+               f"{_ensz_html(_ensz_for_row(kind, tkr))}</td>"
                f"<td style='{_TD};color:#64748B;background:__BG__'>{asof}"
                f"</td></tr>")
         recs.append((grp, row, ratios))
@@ -941,7 +1023,7 @@ def render_core_markets():
               f"<th style='{_TH}'>Instrument</th>" + "".join(
         f"<th style='{_TH};text-align:right'>{h}</th>"
         for h in ("Last", "σ/day", "1d Δ", "3d", "1w", "1m", "3m", "YTD",
-                  "RSI14", "RSI30")) + \
+                  "RSI14", "RSI30", "CTAz")) + \
         f"<th style='{_TH}'>as of (UK)</th></tr>"
     html = "<table style='border-collapse:collapse'>"
     grp_seen = None
@@ -949,7 +1031,7 @@ def render_core_markets():
         if grp != grp_seen:
             # repeat the column header under every group band so the
             # columns stay identifiable when scrolled deep into the table
-            html += f"<tr><td colspan='13' style='{_GRP}'>{grp}</td></tr>"
+            html += f"<tr><td colspan='14' style='{_GRP}'>{grp}</td></tr>"
             html += hdr_row
             grp_seen = grp
         a = 0.0
@@ -991,6 +1073,10 @@ def render_core_markets():
              "1σ for that horizon (σ·√days, Vol Adj Move convention — YTD "
              "uses elapsed trading days): <span style='color:#D97706'>"
              "≥1σ</span>, <span style='color:#DC2626'>≥2σ</span>. "
+             "**CTAz** = simulated trend-follower positioning z vs 10y "
+             "(Slow-tilted vol-wtd ensemble, same engine as Macro ▸ CTA "
+             "Positioning; amber ≥1σ, red ≥2σ; sign = trend direction, "
+             "rates in yield terms; refreshed 6-hourly).  ·  "
              "RSI14/RSI30 = Wilder RSI on daily closes excl. the current "
              "session — for rates it runs on the YIELD, so red ≥70 means "
              "yields rich/overbought (bonds sold off). Row shading: purple "
