@@ -22,6 +22,25 @@ from watchlist import (
     _load_cs_json, _fetch_custom_df_cached,
 )
 
+@st.cache_data(ttl=1800, show_spinner=False)
+def _fetch_custom_full(cs_id: str) -> pd.DataFrame:
+    """Custom series with FULL history via the analyzer's modern evaluator
+    (handles new spec-format entries + charting-registry sources). The old
+    watchlist._fetch_custom_df_cached legacy path returned ~1y only — US
+    2s10s came back 245 rows and the positioning tab said 'no usable
+    history' (Rajat 2026-08-28)."""
+    try:
+        import analyzer
+        s = analyzer._fetch_custom_series(cs_id, "max")
+        if s is None or s.empty:
+            return pd.DataFrame()
+        s = s.dropna()
+        s.index = pd.to_datetime(s.index).normalize()
+        return pd.DataFrame({"Close": s.astype(float)})
+    except Exception:
+        return pd.DataFrame()
+
+
 # ── CTA asset universe ─────────────────────────────────────────────────────────
 CTA_ASSETS = [
     {"name": "S&P 500",        "ticker": "^GSPC",     "class": "Equity"},
@@ -163,7 +182,7 @@ def _compute_signals(tickers, tsmom_days, ma_fast, ma_slow, donchian_n, ewma_spa
     rows = []
     for tkr in tickers:
         if tkr.startswith("custom:"):
-            df = _fetch_custom_df_cached(tkr[7:])
+            df = _fetch_custom_full(tkr[7:])
         else:
             df = _raw_daily(tkr)
         if df.empty or "Close" not in df.columns:
@@ -172,7 +191,10 @@ def _compute_signals(tickers, tsmom_days, ma_fast, ma_slow, donchian_n, ewma_spa
         if len(close) < 30:
             continue
 
-        _rt = tkr in rates_tickers          # rates: bp math, never pct
+        # rates: bp math, never pct. Auto-switch too for ANY series touching
+        # zero/negative (custom spreads like US 2s10s — pct is undefined
+        # there; Rajat hit "no usable history" 2026-08-28)
+        _rt = tkr in rates_tickers or bool((close <= 0).any())
         vol = _rvol_ann(close, arithmetic=_rt)
 
         # ── Continuous raw values for cross-sectional scoring ─────────────────
@@ -269,7 +291,7 @@ def _raw_daily_ext(ticker: str, years: int) -> pd.DataFrame:
 
     # ── Custom series ────────────────────────────────────────────────────────
     if ticker.startswith("custom:"):
-        return _fetch_custom_df_cached(ticker[7:])
+        return _fetch_custom_full(ticker[7:])
 
     # ── Sovereign-curve yields (Rajat 2026-08-28): UK gilts via BoE spot
     # curve (+recent splice), JGBs via the MOF curve — charting's curve
@@ -380,7 +402,9 @@ def _hist_signals(ticker: str, tsmom_days: int, ma_fast: int, ma_slow: int,
 
     vol_days = 21
 
-    # rates=True: yield levels → bp math throughout (pct breaks across zero)
+    # rates=True: yield levels → bp math throughout (pct breaks across zero).
+    # Auto-switch for any zero-touching series (custom spreads like 2s10s).
+    rates = rates or bool((close <= 0).any())
     tsmom_s = ((close.diff(tsmom_days) if rates else close.pct_change(tsmom_days))
                .map(lambda x: _sign(x) if pd.notna(x) and math.isfinite(x) else 0))
 
@@ -1520,6 +1544,9 @@ def render_cta_positioning():
                                    don_n, ewma_sp, years=_yrs, rates=_arith)
                 if _h.empty:
                     continue
+                # zero-touching series (spreads) force arithmetic regardless
+                # of class — pct math is undefined across zero
+                _arith = _arith or bool((_h["close"] <= 0).any())
                 if _zbasis.startswith("Multi"):
                     _w, _vbs = _ENSEMBLE_WEIGHTS[_zwts_lbl]
                     _s = _ensemble_position(_h["close"], vol_tgt,
@@ -1572,10 +1599,12 @@ def render_cta_positioning():
                                     rates=_cls_by_name.get(_nm1) == "Rates")
                 if not _h1.empty:
                     _w1, _vbs1 = _ENSEMBLE_WEIGHTS[_zwts_lbl]
+                    _ar1 = (_cls_by_name.get(_nm1) == "Rates"
+                            or bool((_h1["close"] <= 0).any()))
                     with st.spinner("Simulating scenario paths…"):
                         _scn = _scenario_flows(
                             _h1["close"], vol_tgt, _w1, _vbs1,
-                            arithmetic=_cls_by_name.get(_nm1) == "Rates")
+                            arithmetic=_ar1)
                     st.plotly_chart(_plot_scenario_flows(_scn, _nm1),
                                     use_container_width=True)
                     st.caption(
