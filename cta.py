@@ -760,6 +760,9 @@ _ENSEMBLE_WEIGHTS = {
     # horizon's realised vol (not the common 21d) — sizing as slow as the
     # signals. Sums needn't be 1 (normalised).
     "Slow-tilted (10/20/30/40)": ((0.10, 0.20, 0.30, 0.40), False),
+    # same AUM weights but each speed sized off its OWN horizon's realised
+    # vol (Rajat 2026-08-28) — slow sleeves shrug off short vol spikes
+    "Slow-tilted vol-wtd": ((0.10, 0.20, 0.30, 0.40), True),
     "Equal": ((0.25, 0.25, 0.25, 0.25), False),
     "Fast-tilted (40/30/20/10)": ((0.40, 0.30, 0.20, 0.10), False),
     "X-slow (126/252) vol-wtd": ((0.0, 0.0, 0.5, 0.5), True),
@@ -1208,6 +1211,43 @@ _SCN_SIGMAS = ((2, "Up Big", "#059669"), (1, "Up Small", "#2563EB"),
                (-2, "Down Big", "#DC2626"))
 
 
+def _plot_asset_price(px_by_name: dict, cls_by_name: dict) -> go.Figure:
+    """Underlying asset chart, drawn ABOVE the main z chart when its checkbox
+    is on (Rajat 2026-08-28), same span as the z chart. Single asset = raw
+    level (yield % for rates); multi = change since span start (% for
+    prices, bp for rates) so mixed scales share one axis."""
+    single = len(px_by_name) == 1
+    fig = go.Figure()
+    for i, (name, s) in enumerate(px_by_name.items()):
+        rt = cls_by_name.get(name) == "Rates"
+        col = "#1E3A8A" if single else _ZCOLORS[i % len(_ZCOLORS)]
+        if single:
+            y, unit = s, ("%" if rt else "")
+            hv = f"{name}: %{{y:.3f}}{unit}<extra></extra>"
+        elif rt:
+            y = (s - s.iloc[0]) * 100.0
+            hv = f"{name}: %{{y:+.0f}}bp<extra></extra>"
+        else:
+            y = (s / s.iloc[0] - 1) * 100.0
+            hv = f"{name}: %{{y:+.1f}}%<extra></extra>"
+        fig.add_trace(go.Scatter(
+            x=s.index, y=y, name=name, mode="lines",
+            line=dict(color=col, width=2.2 if single else 1.6),
+            hovertemplate=hv))
+    ttl = ("Underlying — level" if single
+           else "Underlying — change since span start (% px · bp rates)")
+    fig.update_layout(
+        height=300, template="plotly_white",
+        title=dict(text=ttl, font=dict(size=13)),
+        margin=dict(l=10, r=20, t=40, b=10),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0,
+                    font=dict(size=11)),
+        hovermode="x unified")
+    fig.update_yaxes(gridcolor="#EEF1F6", zeroline=False)
+    fig.update_xaxes(showgrid=False)
+    return fig
+
+
 def _plot_flows_hist(flows_by_name: dict, flow_lbl: str) -> go.Figure:
     """Standalone simulated-flows chart (4th chart in the tab layout, Rajat
     2026-08-28): bars of N-day net position change, % of vol-target book.
@@ -1405,7 +1445,12 @@ def render_cta_positioning():
     _zspan = zc5.selectbox("Chart span", [1, 2, 3, 5, 10, 15, 20], index=1,
                            key="_cta_z_span",
                            format_func=lambda x: f"{x}y")
-    _oc1, _oc2 = st.columns([2.6, 1.4])
+    _oc1, _oc3, _oc2 = st.columns([2.2, 1.1, 1.3])
+    _zpx_on = _oc3.checkbox("underlying chart on top", value=False,
+                            key="_cta_z_px",
+                            help="Draw the actual asset (level for one "
+                                 "asset; %-px / bp-rates change for several) "
+                                 "above the main chart, same span.")
     _zovl_on = _oc1.checkbox(
         "overlay signal-only z (dotted) — the gap to the main line is the "
         "vol-sizing channel", value=True, key="_cta_z_ovl") \
@@ -1420,7 +1465,7 @@ def render_cta_positioning():
     if _zsel:
         _tk_by_name = {a["name"]: a["ticker"] for a in assets}
         _cls_by_name = {a["name"]: a["class"] for a in assets}
-        _zseries, _zrsi, _zovl, _zflw = {}, {}, {}, {}
+        _zseries, _zrsi, _zovl, _zflw, _zpx = {}, {}, {}, {}, {}
 
         def _zof(_s):
             _mu = _s.rolling(_zwin, min_periods=_zwin // 2).mean()
@@ -1460,6 +1505,10 @@ def render_cta_positioning():
                 if len(_z):
                     _zseries[_nm] = _z
                     _zrsi[_nm] = _h["rsi30"].reindex(_z.index).dropna()
+                    if _zpx_on:
+                        _px = _h["close"].reindex(_z.index).dropna()
+                        if len(_px):
+                            _zpx[_nm] = _px
                     if _zflw_lbl != "off":
                         _f = (_s.diff(_FLW_D[_zflw_lbl]) * 100.0
                               ).reindex(_z.index).dropna()
@@ -1468,8 +1517,12 @@ def render_cta_positioning():
         if _zseries:
             _zw_lbl = {126: "6m", 252: "1y", 504: "2y", 1260: "5y",
                        2520: "10y"}[_zwin]
-            # chart order (Rajat 2026-08-28): 1 main z (big, with RSI as its
-            # 2nd panel) → 3 projected flows → 4 simulated flows
+            # chart order (Rajat 2026-08-28): 0 underlying (optional, on top)
+            # → 1 main z (big, RSI as its 2nd panel) → 3 projected flows →
+            # 4 simulated flows
+            if _zpx:
+                st.plotly_chart(_plot_asset_price(_zpx, _cls_by_name),
+                                use_container_width=True)
             st.plotly_chart(_plot_positioning_z(_zseries, _zw_lbl, _zrsi,
                                                 _zovl or None),
                             use_container_width=True)
