@@ -318,7 +318,21 @@ _YF_PERIOD_FOR_YEARS = {1: "2y", 2: "5y", 3: "5y", 5: "5y", 7: "10y", 10: "10y",
 def _raw_daily_ext(ticker: str, years: int) -> pd.DataFrame:
     """Fetch `years` of daily OHLCV. Mirrors _raw_daily's source routing exactly:
     FRED → ECB API → JGB MOF → yfinance (3-level fallback).
+    Restart-proof: read-through daily_store disk layer (Rajat 2026-08-28 —
+    "store it in a local database so a restart doesn't recompute").
     """
+    import daily_store
+    _dk = f"rawext|{ticker}|{years}"
+    _cached = daily_store.get_df(_dk)
+    if _cached is not None:
+        return _cached
+    df = _raw_daily_ext_fetch(ticker, years)
+    if not df.empty:
+        daily_store.put_df(_dk, df)
+    return df
+
+
+def _raw_daily_ext_fetch(ticker: str, years: int) -> pd.DataFrame:
     start_str = (date.today() - timedelta(days=years * 365 + 60)).strftime("%Y-%m-%d")
     cutoff    = pd.Timestamp(start_str)
     period    = _YF_PERIOD_FOR_YEARS.get(years, "10y")

@@ -63,42 +63,57 @@ _ENSZ_YIELD = {
 @st.cache_data(ttl=86400, show_spinner=False)
 def _ens_z10(tkr: str, rates: bool):
     """Slow-tilted vol-wtd ensemble positioning z vs 10y — one value.
-    years=15 matches the positioning tab's fetch tier → shared cache."""
+    years=15 matches the positioning tab's fetch tier → shared cache.
+    Restart-proof via daily_store (Rajat 2026-08-28)."""
+    import daily_store
+    _k = f"ensz|{tkr}|{rates}"
+    _v = daily_store.get(_k)
+    if _v is not None:
+        return None if _v == "none" else _v
     try:
         import cta
         h = cta._hist_signals(tkr, 126, 20, 200, 55, 63, years=15, rates=rates)
-        if h.empty or len(h) < 900:
-            return None
-        w, vbs = cta._ENSEMBLE_WEIGHTS["Slow-tilted vol-wtd"]
-        s = cta._ensemble_position(h["close"], 0.10, weights=w,
-                                   vol_by_speed=vbs, arithmetic=rates)
-        z = ((s - s.rolling(2520, min_periods=1260).mean())
-             / s.rolling(2520, min_periods=1260).std().replace(0, np.nan)
-             ).dropna()
-        return float(z.iloc[-1]) if len(z) else None
+        z = None
+        if not h.empty and len(h) >= 900:
+            w, vbs = cta._ENSEMBLE_WEIGHTS["Slow-tilted vol-wtd"]
+            s = cta._ensemble_position(h["close"], 0.10, weights=w,
+                                       vol_by_speed=vbs, arithmetic=rates)
+            zs = ((s - s.rolling(2520, min_periods=1260).mean())
+                  / s.rolling(2520, min_periods=1260).std().replace(0, np.nan)
+                  ).dropna()
+            z = float(zs.iloc[-1]) if len(zs) else None
+        daily_store.put(_k, "none" if z is None else z)
+        return z
     except Exception:
         return None
 
 
 @st.cache_data(ttl=86400, show_spinner=False)
 def _ens_z10_sprd(tka: str, tkb: str):
-    """Positioning z for a curve spread row (long-leg minus short-leg, bp)."""
+    """Positioning z for a curve spread row (long-leg minus short-leg, bp).
+    Restart-proof via daily_store."""
+    import daily_store
+    _k = f"enszsprd|{tka}|{tkb}"
+    _v = daily_store.get(_k)
+    if _v is not None:
+        return None if _v == "none" else _v
     try:
         import cta
         ha = cta._hist_signals(tka, 126, 20, 200, 55, 63, years=15, rates=True)
         hb = cta._hist_signals(tkb, 126, 20, 200, 55, 63, years=15, rates=True)
-        if ha.empty or hb.empty:
-            return None
-        sp = ((hb["close"] - ha["close"]) * 100.0).dropna()
-        if len(sp) < 900:
-            return None
-        w, vbs = cta._ENSEMBLE_WEIGHTS["Slow-tilted vol-wtd"]
-        s = cta._ensemble_position(sp, 0.10, weights=w, vol_by_speed=vbs,
-                                   arithmetic=True)
-        z = ((s - s.rolling(2520, min_periods=1260).mean())
-             / s.rolling(2520, min_periods=1260).std().replace(0, np.nan)
-             ).dropna()
-        return float(z.iloc[-1]) if len(z) else None
+        z = None
+        if not ha.empty and not hb.empty:
+            sp = ((hb["close"] - ha["close"]) * 100.0).dropna()
+            if len(sp) >= 900:
+                w, vbs = cta._ENSEMBLE_WEIGHTS["Slow-tilted vol-wtd"]
+                s = cta._ensemble_position(sp, 0.10, weights=w,
+                                           vol_by_speed=vbs, arithmetic=True)
+                zs = ((s - s.rolling(2520, min_periods=1260).mean())
+                      / s.rolling(2520, min_periods=1260).std()
+                      .replace(0, np.nan)).dropna()
+                z = float(zs.iloc[-1]) if len(zs) else None
+        daily_store.put(_k, "none" if z is None else z)
+        return z
     except Exception:
         return None
 
