@@ -91,9 +91,13 @@ def _sign(x) -> int:
     return 1 if x > 0 else (-1 if x < 0 else 0)
 
 
-def _tsmom(close, lb):
+def _tsmom(close, lb, arithmetic=False):
+    # arithmetic=True for rates (yield levels): bp moves, never pct —
+    # pct breaks across zero (JGB 2019-21). Others stay %.
     if len(close) < lb + 1:
         return 0
+    if arithmetic:
+        return _sign(close.iloc[-1] - close.iloc[-lb])
     return _sign(close.iloc[-1] / close.iloc[-lb] - 1)
 
 
@@ -117,10 +121,10 @@ def _donchian(close, n):
     return 0
 
 
-def _ewma_signal(close, span, vol_days=21):
+def _ewma_signal(close, span, vol_days=21, arithmetic=False):
     if len(close) < max(span, vol_days) + 5:
         return 0
-    rets = close.pct_change().dropna()
+    rets = (close.diff() if arithmetic else close.pct_change()).dropna()
     if len(rets) < vol_days:
         return 0
     ev  = rets.ewm(span=span, adjust=False).mean().iloc[-1]
@@ -130,10 +134,13 @@ def _ewma_signal(close, span, vol_days=21):
     return _sign(ev / rv)
 
 
-def _rvol_ann(close, vol_days=21):
+def _rvol_ann(close, vol_days=21, arithmetic=False):
+    """Annualised vol — % terms for prices, yield POINTS for rates
+    (arithmetic; display ×100 = bp/yr)."""
     if len(close) < vol_days + 2:
         return float("nan")
-    return float(close.pct_change().dropna().iloc[-vol_days:].std() * math.sqrt(252))
+    rets = (close.diff() if arithmetic else close.pct_change()).dropna()
+    return float(rets.iloc[-vol_days:].std() * math.sqrt(252))
 
 
 # ── Point-in-time signal table ─────────────────────────────────────────────────
@@ -153,12 +160,14 @@ def _compute_signals(tickers, tsmom_days, ma_fast, ma_slow, donchian_n, ewma_spa
         if len(close) < 30:
             continue
 
-        vol = _rvol_ann(close)
+        _rt = tkr in rates_tickers          # rates: bp math, never pct
+        vol = _rvol_ann(close, arithmetic=_rt)
 
         # ── Continuous raw values for cross-sectional scoring ─────────────────
-        # TSMOM: vol-normalised trailing return
+        # TSMOM: vol-normalised trailing return (bp-based for rates)
         if len(close) >= tsmom_days + 1 and math.isfinite(vol) and vol > 0:
-            ret = float(close.iloc[-1] / close.iloc[-tsmom_days] - 1)
+            ret = (float(close.iloc[-1] - close.iloc[-tsmom_days]) if _rt
+                   else float(close.iloc[-1] / close.iloc[-tsmom_days] - 1))
             tsmom_raw = ret / vol
         else:
             tsmom_raw = 0.0
@@ -181,9 +190,9 @@ def _compute_signals(tickers, tsmom_days, ma_fast, ma_slow, donchian_n, ewma_spa
         else:
             don_raw = 0.5
 
-        # EWMA: vol-normalised EWMA of returns
+        # EWMA: vol-normalised EWMA of returns (bp-based for rates)
         if len(close) >= max(ewma_span, 21) + 5:
-            rets = close.pct_change().dropna()
+            rets = (close.diff() if _rt else close.pct_change()).dropna()
             ev  = float(rets.ewm(span=ewma_span, adjust=False).mean().iloc[-1])
             rv  = float(rets.iloc[-21:].std())
             ewma_raw = ev / rv if rv > 0 and math.isfinite(rv) else 0.0
@@ -215,10 +224,10 @@ def _compute_signals(tickers, tsmom_days, ma_fast, ma_slow, donchian_n, ewma_spa
 
         rows.append({
             "ticker":    tkr,
-            "tsmom":     _tsmom(close, tsmom_days),
+            "tsmom":     _tsmom(close, tsmom_days, arithmetic=_rt),
             "ma_cross":  _ma_cross(close, ma_fast, ma_slow),
             "donchian":  _donchian(close, donchian_n),
-            "ewma":      _ewma_signal(close, ewma_span),
+            "ewma":      _ewma_signal(close, ewma_span, arithmetic=_rt),
             "vol_ann":   vol,
             "rsi14":     rsi14,
             "tsmom_raw": tsmom_raw,
@@ -316,7 +325,8 @@ def _raw_daily_ext(ticker: str, years: int) -> pd.DataFrame:
 
 @st.cache_data(ttl=1800, show_spinner=False)
 def _hist_signals(ticker: str, tsmom_days: int, ma_fast: int, ma_slow: int,
-                  donchian_n: int, ewma_span: int, years: int = 1) -> pd.DataFrame:
+                  donchian_n: int, ewma_span: int, years: int = 1,
+                  rates: bool = False) -> pd.DataFrame:
     """Vectorized signals across full price history.
 
     Returns: close, ema_fast, ema_slow, don_high, don_low,
@@ -333,7 +343,8 @@ def _hist_signals(ticker: str, tsmom_days: int, ma_fast: int, ma_slow: int,
 
     vol_days = 21
 
-    tsmom_s = (close.pct_change(tsmom_days)
+    # rates=True: yield levels → bp math throughout (pct breaks across zero)
+    tsmom_s = ((close.diff(tsmom_days) if rates else close.pct_change(tsmom_days))
                .map(lambda x: _sign(x) if pd.notna(x) and math.isfinite(x) else 0))
 
     ema_f = close.ewm(span=ma_fast,  adjust=False).mean()
@@ -347,7 +358,7 @@ def _hist_signals(ticker: str, tsmom_days: int, ma_fast: int, ma_slow: int,
         index=close.index,
     )
 
-    rets     = close.pct_change()
+    rets     = close.diff() if rates else close.pct_change()
     ewma_ret = rets.ewm(span=ewma_span, adjust=False).mean()
     rvol     = rets.rolling(vol_days).std()
     ewma_s   = (ewma_ret / rvol.replace(0, np.nan)).map(
@@ -660,8 +671,11 @@ def _risk_cell(risk):
     col = "#059669" if risk > 0 else "#DC2626"
     return f'<span style="color:{col};font-weight:600">{risk:+.1f}%</span>'
 
-def _vol_fmt(v):
-    return "—" if not math.isfinite(v) else f"{v*100:.1f}%"
+def _vol_fmt(v, rates=False):
+    if not math.isfinite(v):
+        return "—"
+    # rates vol is in yield POINTS/yr (bp math) → display as bp; others %/yr
+    return f"{v*100:.0f}bp" if rates else f"{v*100:.1f}%"
 
 def _rsi_cell(rsi):
     if not math.isfinite(rsi):
@@ -1095,7 +1109,7 @@ def render_cta():
             f'<td style="{td}">{_norm_score_cell(rd["norm_score"])}</td>'
             f'<td style="{td}">{_ensz_cell(rd["ens_z"])}</td>'
             f'<td style="{td}">{_rsi_cell(rd["rsi14"])}</td>'
-            f'<td style="{td}">{_vol_fmt(rd["vol"])}</td>'
+            f'<td style="{td}">{_vol_fmt(rd["vol"], rd["cls"] == "Rates")}</td>'
             f'<td style="{td}">{_signal_score_cell(rd["sc1"], rd["s1"])}</td>'
             f'<td style="{td}">{_signal_score_cell(rd["sc2"], rd["s2"])}</td>'
             f'<td style="{td}">{_signal_score_cell(rd["sc3"], rd["s3"])}</td>'
@@ -1164,13 +1178,16 @@ def render_cta():
     if run_clicked and sel_name != "— choose an asset —":
         sel_tkr = next(a["ticker"] for a in all_assets if a["name"] == sel_name)
         years   = _PERIOD_YEARS[period_label]
+        _rt_sel = class_map.get(sel_tkr) == "Rates"
         with st.spinner(f"Loading {period_label} of {sel_name} data…"):
-            hist = _hist_signals(sel_tkr, tsmom_lb, ma_fast, ma_slow, don_n, ewma_sp, years)
+            hist = _hist_signals(sel_tkr, tsmom_lb, ma_fast, ma_slow, don_n, ewma_sp, years,
+                                 rates=_rt_sel)
             if hist.empty:
                 # Stale empty cache (e.g. from before AlphaVantage routing was added)
                 _hist_signals.clear()
                 _raw_daily_ext.clear()
-                hist = _hist_signals(sel_tkr, tsmom_lb, ma_fast, ma_slow, don_n, ewma_sp, years)
+                hist = _hist_signals(sel_tkr, tsmom_lb, ma_fast, ma_slow, don_n, ewma_sp, years,
+                                     rates=_rt_sel)
         st.session_state["_cta_hist"]  = hist
         st.session_state["_cta_hmeta"] = {
             "name": sel_name, "period": period_label,
@@ -1413,11 +1430,11 @@ def render_cta_positioning():
             for _nm in _zsel:
                 _need = _zspan + max(1, _zwin // 252) + 1
                 _yrs = next((k for k in (3, 5, 7, 10, 15, 20, 30) if k >= _need), 30)
+                _arith = _cls_by_name.get(_nm) == "Rates"   # yield levels
                 _h = _hist_signals(_tk_by_name[_nm], tsmom_lb, ma_fast, ma_slow,
-                                   don_n, ewma_sp, years=_yrs)
+                                   don_n, ewma_sp, years=_yrs, rates=_arith)
                 if _h.empty:
                     continue
-                _arith = _cls_by_name.get(_nm) == "Rates"   # yield levels
                 if _zbasis.startswith("Multi"):
                     _w, _vbs = _ENSEMBLE_WEIGHTS[_zwts_lbl]
                     _s = _ensemble_position(_h["close"], vol_tgt,
@@ -1457,7 +1474,8 @@ def render_cta_positioning():
                 _nm1 = _zsel[0]
                 st.markdown(f"##### Projected 1m flows — {_nm1}")
                 _h1 = _hist_signals(_tk_by_name[_nm1], tsmom_lb, ma_fast,
-                                    ma_slow, don_n, ewma_sp, years=5)
+                                    ma_slow, don_n, ewma_sp, years=5,
+                                    rates=_cls_by_name.get(_nm1) == "Rates")
                 if not _h1.empty:
                     _w1, _vbs1 = _ENSEMBLE_WEIGHTS[_zwts_lbl]
                     with st.spinner("Simulating scenario paths…"):
