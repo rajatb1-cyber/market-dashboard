@@ -60,62 +60,82 @@ _ENSZ_YIELD = {
 }
 
 
-@st.cache_data(ttl=86400, show_spinner=False)
-def _ens_z10(tkr: str, rates: bool):
-    """Slow-tilted vol-wtd ensemble positioning z vs 10y — one value.
-    years=15 matches the positioning tab's fetch tier → shared cache.
-    Restart-proof via daily_store (Rajat 2026-08-28)."""
-    import daily_store
-    _k = f"ensz|{tkr}|{rates}"
-    _v = daily_store.get(_k)
-    if _v is not None:
-        return None if _v == "none" else _v
-    try:
-        import cta
-        h = cta._hist_signals(tkr, 126, 20, 200, 55, 63, years=15, rates=rates)
-        z = None
-        if not h.empty and len(h) >= 900:
-            w, vbs = cta._ENSEMBLE_WEIGHTS["Slow-tilted vol-wtd"]
-            s = cta._ensemble_position(h["close"], 0.10, weights=w,
-                                       vol_by_speed=vbs, arithmetic=rates)
-            zs = ((s - s.rolling(2520, min_periods=1260).mean())
-                  / s.rolling(2520, min_periods=1260).std().replace(0, np.nan)
-                  ).dropna()
-            z = float(zs.iloc[-1]) if len(zs) else None
-        daily_store.put(_k, "none" if z is None else z)
-        return z
-    except Exception:
-        return None
+# CTAz is computed in a BACKGROUND daemon, never inline (Rajat 2026-08-28:
+# a cold compute inside a render blocked clicks queued behind the board —
+# renders read daily_store only and show "…" until the worker lands; same
+# non-blocking pattern as the Pricer's weekly-expiry warmer).
+_ENSZ_KICKED = set()      # per-process: job keys already handed to a worker
 
 
-@st.cache_data(ttl=86400, show_spinner=False)
-def _ens_z10_sprd(tka: str, tkb: str):
-    """Positioning z for a curve spread row (long-leg minus short-leg, bp).
-    Restart-proof via daily_store."""
+def _ensz_compute_one(job) -> None:
+    """Worker-side compute → daily_store. NO streamlit UI calls here."""
     import daily_store
-    _k = f"enszsprd|{tka}|{tkb}"
-    _v = daily_store.get(_k)
-    if _v is not None:
-        return None if _v == "none" else _v
+    import cta
+    kind, key, args = job
     try:
-        import cta
-        ha = cta._hist_signals(tka, 126, 20, 200, 55, 63, years=15, rates=True)
-        hb = cta._hist_signals(tkb, 126, 20, 200, 55, 63, years=15, rates=True)
         z = None
-        if not ha.empty and not hb.empty:
-            sp = ((hb["close"] - ha["close"]) * 100.0).dropna()
-            if len(sp) >= 900:
-                w, vbs = cta._ENSEMBLE_WEIGHTS["Slow-tilted vol-wtd"]
-                s = cta._ensemble_position(sp, 0.10, weights=w,
-                                           vol_by_speed=vbs, arithmetic=True)
+        w, vbs = cta._ENSEMBLE_WEIGHTS["Slow-tilted vol-wtd"]
+        if kind == "one":
+            tkr, rates = args
+            h = cta._hist_signals(tkr, 126, 20, 200, 55, 63, years=15,
+                                  rates=rates)
+            if not h.empty and len(h) >= 900:
+                s = cta._ensemble_position(h["close"], 0.10, weights=w,
+                                           vol_by_speed=vbs, arithmetic=rates)
                 zs = ((s - s.rolling(2520, min_periods=1260).mean())
                       / s.rolling(2520, min_periods=1260).std()
                       .replace(0, np.nan)).dropna()
                 z = float(zs.iloc[-1]) if len(zs) else None
-        daily_store.put(_k, "none" if z is None else z)
-        return z
+        else:                                          # spread
+            tka, tkb = args
+            ha = cta._hist_signals(tka, 126, 20, 200, 55, 63, years=15,
+                                   rates=True)
+            hb = cta._hist_signals(tkb, 126, 20, 200, 55, 63, years=15,
+                                   rates=True)
+            if not ha.empty and not hb.empty:
+                sp = ((hb["close"] - ha["close"]) * 100.0).dropna()
+                if len(sp) >= 900:
+                    s = cta._ensemble_position(sp, 0.10, weights=w,
+                                               vol_by_speed=vbs,
+                                               arithmetic=True)
+                    zs = ((s - s.rolling(2520, min_periods=1260).mean())
+                          / s.rolling(2520, min_periods=1260).std()
+                          .replace(0, np.nan)).dropna()
+                    z = float(zs.iloc[-1]) if len(zs) else None
+        daily_store.put(key, "none" if z is None else z)
     except Exception:
-        return None
+        pass                                           # missing → retried tomorrow
+
+
+def _ensz_worker(jobs: list) -> None:
+    for job in jobs:
+        _ensz_compute_one(job)
+
+
+def _ensz_lookup(kind: str, tkr: str):
+    """(value, job) — store value if present (None value = computed-absent);
+    job = (kind, key, args) when the day's value still needs computing."""
+    import daily_store
+    if kind == "cnbc":
+        m = _ENSZ_YIELD.get(tkr)
+        if not m:
+            return None, None
+        key, job = f"ensz|{m}|True", ("one", f"ensz|{m}|True", (m, True))
+    elif kind == "px":
+        key, job = f"ensz|{tkr}|False", ("one", f"ensz|{tkr}|False", (tkr, False))
+    elif kind == "sprd":
+        a, b = tkr.split("|")
+        ma, mb = _ENSZ_YIELD.get(a), _ENSZ_YIELD.get(b)
+        if not (ma and mb):
+            return None, None
+        key = f"enszsprd|{ma}|{mb}"
+        job = ("sprd", key, (ma, mb))
+    else:                                   # synth — no deep history
+        return None, None
+    v = daily_store.get(key)
+    if v is not None:
+        return (None if v == "none" else v), None
+    return None, job
 
 
 def _ensz_html(z):
@@ -126,19 +146,6 @@ def _ensz_html(z):
     except Exception:
         return "<span style='color:#CBD5E1'>—</span>"
 
-
-def _ensz_for_row(kind: str, tkr: str):
-    """Route a board row to its positioning z (None → em-dash cell)."""
-    if kind == "cnbc":
-        m = _ENSZ_YIELD.get(tkr)
-        return _ens_z10(m, True) if m else None
-    if kind == "sprd":
-        a, b = tkr.split("|")
-        ma, mb = _ENSZ_YIELD.get(a), _ENSZ_YIELD.get(b)
-        return _ens_z10_sprd(ma, mb) if ma and mb else None
-    if kind == "px":
-        return _ens_z10(tkr, False)
-    return None                       # synth (BBDXY) — no deep history
 
 # ── Spec ─────────────────────────────────────────────────────────────────────
 # (group, display name, ticker/symbol, kind)  kind: px = yfinance price row,
@@ -888,9 +895,27 @@ def render_core_markets():
                    "rates rows unavailable this refresh")
     now = datetime.now(timezone.utc)
 
+    # CTAz column is OPT-IN per session (Rajat 2026-08-28: "don't load the
+    # whole CTA thing unless I click load — if I'm not using it why run
+    # this"). Off → zero reads, zero fetches, zero threads.
+    _ensz_on = st.checkbox(
+        "🧲 CTAz column (daily trend-positioning z — first enable of the day "
+        "computes in the background, values fill in as they land)",
+        value=False, key="_core_ensz_on")
+    _ensz_jobs = []
+
     # pass 1 — build each row's html (with __BG__ placeholder) + σ ratios
     recs = []
     for grp, name, tkr, kind in _SPEC:
+        if _ensz_on:
+            _ez_val, _ez_job = _ensz_lookup(kind, tkr)
+            if _ez_job is not None:
+                _ensz_jobs.append(_ez_job)
+                _ez_cell = "<span style='color:#94A3B8'>…</span>"
+            else:
+                _ez_cell = _ensz_html(_ez_val)
+        else:
+            _ez_cell = "<span style='color:#CBD5E1'>·</span>"
         lvl = None
         ts = None
         ratios = {}
@@ -1015,10 +1040,21 @@ def render_core_markets():
                f"<td style='{_TD};text-align:right;background:__BG__'>"
                f"{_rsi_cell(rsi30)}</td>"
                f"<td style='{_TD};text-align:right;background:__BG__'>"
-               f"{_ensz_html(_ensz_for_row(kind, tkr))}</td>"
+               f"{_ez_cell}</td>"
                f"<td style='{_TD};color:#64748B;background:__BG__'>{asof}"
                f"</td></tr>")
         recs.append((grp, row, ratios))
+
+    # kick ONE background worker for any missing CTAz values — renders never
+    # block on the compute; "…" cells fill on a later refresh
+    if _ensz_jobs:
+        _new = [j for j in _ensz_jobs if j[1] not in _ENSZ_KICKED]
+        if _new:
+            for j in _new:
+                _ENSZ_KICKED.add(j[1])
+            import threading
+            threading.Thread(target=_ensz_worker, args=(_new,),
+                             daemon=True).start()
 
     # pass 2 — shade rows purple by |ratio| of the chosen horizon.
     # TWO normalisation pools (Rajat 2026-08-17): the ★ Watchlist group
@@ -1091,8 +1127,9 @@ def render_core_markets():
              "**CTAz** = simulated trend-follower positioning z vs 10y "
              "(Slow-tilted vol-wtd ensemble, same engine as Macro ▸ CTA "
              "Positioning; amber ≥1σ, red ≥2σ; sign = trend direction, "
-             "rates in yield terms; computed once daily — first board load "
-             "of the day is slower).  ·  "
+             "rates in yield terms; opt-in checkbox above — first enable of "
+             "the day computes in the background and cells fill in as they "
+             "land, stored per day in daily_cache.db).  ·  "
              "RSI14/RSI30 = Wilder RSI on daily closes excl. the current "
              "session — for rates it runs on the YIELD, so red ≥70 means "
              "yields rich/overbought (bonds sold off). Row shading: purple "
