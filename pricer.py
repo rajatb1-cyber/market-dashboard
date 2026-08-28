@@ -1143,14 +1143,14 @@ def render_pricer():
             rows.append({"#": e["line"], "Market": e["mlbl"],
                          "Structure": "· enter a description ·",
                          "Expiry": "", "Days": "", "Lots": "", "Fwd": "", "ATM": "",
-                         "Prem pts": "", "Prem $": "", "Δ %": "", "Δ $": "",
+                         "Prem": "", "Prem $": "", "Δ %": "", "Δ $": "",
                          "θ $/d": "", "Vega $": ""})
             continue
         if e.get("err") or not r_:
             rows.append({"#": e["line"], "Market": e["mlbl"],
                          "Structure": f"⚠ {e.get('err', 'no result')}",
                          "Expiry": "", "Days": "", "Lots": "", "Fwd": "", "ATM": "",
-                         "Prem pts": "", "Prem $": "", "Δ %": "", "Δ $": "",
+                         "Prem": "", "Prem $": "", "Δ %": "", "Δ $": "",
                          "θ $/d": "", "Vega $": ""})
             continue
         fut = e.get("kind") == "fut"
@@ -1186,14 +1186,14 @@ def render_pricer():
                      if r_.get("dv01") else "—"),
             "Dur": _dur_disp(e["src"], e["mkt"]),
             "ATM": "—" if fut else r_.get("atm_disp", "—"),
-            # Premium in cents (price pts × 100) for FX (Rajat 2026-08-21 —
-            # 6E 0.0085 → 0.85¢) AND rates (2026-08-28 — STIR/bond options
-            # are quoted in cents: 0.0625 SOFR put = 6.25¢, Bund 0.36 = 36¢).
-            # Equity/commod stay in points.
-            "Prem pts": ("—" if fut else
-                         (f"{r_['prem_pts'] * 100:.4g}¢"
-                          if e.get("cls") == "FX" or e.get("src") == "rates"
-                          else f"{r_['prem_pts']:.4g}")),
+            # Premium with its unit on the value: ¢ = hundredths of a price
+            # point for FX (Rajat 2026-08-21) and rates (2026-08-28 — STIR/
+            # bond options are quoted in cents: 0.0625 SOFR put = 6.25¢,
+            # Bund 0.36 = 36¢); pt = full price points (equity/commod).
+            "Prem": ("—" if fut else
+                     (f"{r_['prem_pts'] * 100:.4g}¢"
+                      if e.get("cls") == "FX" or e.get("src") == "rates"
+                      else f"{r_['prem_pts']:.4g}pt")),
             "Prem $": "—" if fut else _fmt_money(r_["prem_usd"]),
             # tenor-normalized premium: total $ prem / √(trading DAYS to
             # expiry) — e.g. 20 busdays → prem/√20 — for comparing
@@ -1225,7 +1225,7 @@ def render_pricer():
         import html as _hesc
         _COLS = ["#", "Market", "Expiry", "Days", "Lots", "Structure",
                  "Fwd", "Fwd yld", "K yld", "DV01", "Dur", "ATM",
-                 "Prem pts", "Prem $", "Prem $/√T", "Δ %", "Δ $",
+                 "Prem", "Prem $", "Prem $/√T", "Δ %", "Δ $",
                  "θ $/d", "Vega $"]
         _LEFT = {"Market", "Structure"}
         _css = (
