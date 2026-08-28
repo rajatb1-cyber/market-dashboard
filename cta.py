@@ -9,6 +9,7 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import math
+import re
 import yfinance as yf
 import ta as ta_lib
 from datetime import date, timedelta
@@ -21,6 +22,40 @@ from watchlist import (
     _fetch_fred_df, _fetch_ecb_df, _fetch_jgb_df, _fetch_alphavantage_fx,
     _load_cs_json, _fetch_custom_df_cached,
 )
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def _custom_is_rates(cs_id: str) -> bool:
+    """Rates classification for a CUSTOM series from its components (Rajat
+    2026-08-28: 'any rates related product should be arithmetic' — the
+    convention follows the PRODUCT, not a data heuristic). True when any
+    component var is a rates source: sovereign curve / CNBC yield specs,
+    STIR db contracts, RATES-prefixed registry labels, or the ^..Y/^..YT
+    yield pseudo-tickers."""
+    try:
+        cs = next((c for c in _load_cs_json() if c["id"] == cs_id), None)
+        if not cs:
+            return False
+        for var in cs.get("series", {}).values():
+            sp = var.get("spec") or {}
+            nm = str(var.get("name", "")).upper()
+            code = str(sp.get("code", var.get("key", "")))
+            if sp.get("src") in ("curve", "cnbcy"):
+                return True
+            if nm.startswith("RATES"):
+                return True
+            if code.startswith("stir:"):
+                return True
+            if re.match(r"^\^(US|UK|AU|ECB|JPY|FVX|TNX|TYX)", code):
+                return True
+        return False
+    except Exception:
+        return False
+
+
+def _ticker_is_rates(tkr: str) -> bool:
+    """Custom series inherit rates-ness from their components."""
+    return tkr.startswith("custom:") and _custom_is_rates(tkr[7:])
+
 
 @st.cache_data(ttl=1800, show_spinner=False)
 def _fetch_custom_full(cs_id: str) -> pd.DataFrame:
@@ -191,10 +226,9 @@ def _compute_signals(tickers, tsmom_days, ma_fast, ma_slow, donchian_n, ewma_spa
         if len(close) < 30:
             continue
 
-        # rates: bp math, never pct. Auto-switch too for ANY series touching
-        # zero/negative (custom spreads like US 2s10s — pct is undefined
-        # there; Rajat hit "no usable history" 2026-08-28)
-        _rt = tkr in rates_tickers or bool((close <= 0).any())
+        # rates: bp math, never pct — the convention follows the PRODUCT
+        # (custom series classified from their components, e.g. US 2s10s)
+        _rt = tkr in rates_tickers or _ticker_is_rates(tkr)
         vol = _rvol_ann(close, arithmetic=_rt)
 
         # ── Continuous raw values for cross-sectional scoring ─────────────────
@@ -403,8 +437,8 @@ def _hist_signals(ticker: str, tsmom_days: int, ma_fast: int, ma_slow: int,
     vol_days = 21
 
     # rates=True: yield levels → bp math throughout (pct breaks across zero).
-    # Auto-switch for any zero-touching series (custom spreads like 2s10s).
-    rates = rates or bool((close <= 0).any())
+    # Custom series inherit rates-ness from their components (2s10s etc.).
+    rates = rates or _ticker_is_rates(ticker)
     tsmom_s = ((close.diff(tsmom_days) if rates else close.pct_change(tsmom_days))
                .map(lambda x: _sign(x) if pd.notna(x) and math.isfinite(x) else 0))
 
@@ -1544,9 +1578,8 @@ def render_cta_positioning():
                                    don_n, ewma_sp, years=_yrs, rates=_arith)
                 if _h.empty:
                     continue
-                # zero-touching series (spreads) force arithmetic regardless
-                # of class — pct math is undefined across zero
-                _arith = _arith or bool((_h["close"] <= 0).any())
+                # custom rates products (spreads etc.) → arithmetic too
+                _arith = _arith or _ticker_is_rates(_tk_by_name[_nm])
                 if _zbasis.startswith("Multi"):
                     _w, _vbs = _ENSEMBLE_WEIGHTS[_zwts_lbl]
                     _s = _ensemble_position(_h["close"], vol_tgt,
@@ -1600,7 +1633,7 @@ def render_cta_positioning():
                 if not _h1.empty:
                     _w1, _vbs1 = _ENSEMBLE_WEIGHTS[_zwts_lbl]
                     _ar1 = (_cls_by_name.get(_nm1) == "Rates"
-                            or bool((_h1["close"] <= 0).any()))
+                            or _ticker_is_rates(_tk_by_name[_nm1]))
                     with st.spinner("Simulating scenario paths…"):
                         _scn = _scenario_flows(
                             _h1["close"], vol_tgt, _w1, _vbs1,
