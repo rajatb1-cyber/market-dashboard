@@ -424,7 +424,7 @@ _LIVE_SPECS = {
 }
 
 
-def fetch_live_strips() -> dict:
+def fetch_live_strips(include_ice: bool = False) -> dict:
     """{cb: {(y,m): rate}} from live IBKR quotes (mdtype 4 = delayed-frozen —
     live where entitled, last close where shut). Partial results are fine:
     the caller overlays onto settles month-by-month."""
@@ -446,6 +446,10 @@ def fetch_live_strips() -> dict:
             m, y = 1, y + 1
     out = {}
     for cb, (sym, exch, ccy) in _LIVE_SPECS.items():
+        # ICE monthlies (EON/SOA) trigger TWS subscribe prompts when the
+        # data tier doesn't cover them (Rajat 2026-08-28) → opt-in only
+        if exch == "ICEEU" and not include_ice:
+            continue
         cs = [Future(symbol=sym, exchange=exch, currency=ccy,
                      lastTradeDateOrContractMonth=f"{qy:04d}{qm:02d}")
               for (qy, qm) in months]
@@ -534,14 +538,18 @@ def _path_chart(results: dict):
 
 def render_meetings(host: str = "127.0.0.1", port: int = 7496):
     st.markdown("#### Meetings — hikes & cuts priced, next 12 months")
-    _bc1, _bc2 = st.columns([1.1, 4.9])
+    _bc1, _bc3, _bc2 = st.columns([1.1, 1.6, 3.3])
+    _inc_ice = _bc3.checkbox("incl. ICE strips (EON/SOA)", value=False,
+                             key="_meet_live_ice",
+                             help="The ICE 1M contracts can trigger TWS "
+                                  "subscribe prompts if the data tier "
+                                  "doesn't cover them — off by default.")
     if _bc1.button("⚡ Live", key="_meet_live_btn",
-                   help="Overlay LIVE strip quotes from IBKR (ZQ/EON/SOA, "
-                        "delayed-frozen) onto the settlement bootstrap. "
-                        "Settles remain the default on load; live lasts "
-                        "until the tab reruns cold."):
+                   help="Overlay LIVE strip quotes from IBKR (ZQ Fed Funds; "
+                        "optionally EON/SOA) onto the settlement bootstrap. "
+                        "Settles remain the default on load."):
         with st.spinner("Quoting strips via IBKR…"):
-            st.session_state["_meet_live"] = fetch_live_strips()
+            st.session_state["_meet_live"] = fetch_live_strips(_inc_ice)
     _live = st.session_state.get("_meet_live")
     data = fetch_strips()
     results = {}
