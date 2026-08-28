@@ -139,7 +139,8 @@ def _rvol_ann(close, vol_days=21):
 # ── Point-in-time signal table ─────────────────────────────────────────────────
 
 @st.cache_data(ttl=1800, show_spinner=False)
-def _compute_signals(tickers, tsmom_days, ma_fast, ma_slow, donchian_n, ewma_span):
+def _compute_signals(tickers, tsmom_days, ma_fast, ma_slow, donchian_n, ewma_span,
+                     rates_tickers: tuple = ()):
     rows = []
     for tkr in tickers:
         if tkr.startswith("custom:"):
@@ -203,7 +204,8 @@ def _compute_signals(tickers, tsmom_days, ma_fast, ma_slow, donchian_n, ewma_spa
         try:
             _w, _vbs = _ENSEMBLE_WEIGHTS["Slow-tilted (10/20/30/40)"]
             _pos = _ensemble_position(close, 0.10, weights=_w,
-                                      vol_by_speed=_vbs)
+                                      vol_by_speed=_vbs,
+                                      arithmetic=tkr in rates_tickers)
             _zs = ((_pos - _pos.rolling(252, min_periods=126).mean())
                    / _pos.rolling(252, min_periods=126).std().replace(0, np.nan)
                    ).dropna()
@@ -753,7 +755,8 @@ _ENSEMBLE_WEIGHTS = {
 def _ensemble_position(close: pd.Series, vol_tgt: float,
                        speeds=(21, 63, 126, 252),
                        weights=None, vol_by_speed: bool = False,
-                       sized: bool = True) -> pd.Series:
+                       sized: bool = True,
+                       arithmetic: bool = False) -> pd.Series:
     """Multi-speed CTA positioning proxy (Rajat 2026-08-26, after Citadel's
     'collection of trend-following frameworks with varying adjustment
     speeds'): at each speed L, a TSMOM sign and a vol-normalised EWMA sign,
@@ -765,7 +768,10 @@ def _ensemble_position(close: pd.Series, vol_tgt: float,
     if weights is None:
         weights = (1.0,) * len(speeds)
     wsum = float(sum(weights)) or 1.0
-    rets = close.pct_change()
+    # arithmetic=True (rates: yield LEVELS): use level diffs — pct_change on
+    # a series that crosses zero is garbage (JGB 10y 2019-21 sat at −0.3..
+    # +0.17 with 36 zero crossings → infinite "returns"; Rajat 2026-08-28)
+    rets = close.diff() if arithmetic else close.pct_change()
     rvol = rets.rolling(21).std().replace(0, np.nan)   # signal norm stays 21d
     scale_21 = vol_tgt / (rvol * math.sqrt(252))
     pos = pd.Series(0.0, index=close.index)
@@ -784,7 +790,8 @@ def _ensemble_position(close: pd.Series, vol_tgt: float,
         # US30y Jun23-Jun24 with 9 zero-crossings of the 126d return):
         # trend t-stat clipped to ±2 and scaled to ±1, so positions build
         # and fade through zero instead of snapping.
-        ts = (close.pct_change(L) / (rvol * math.sqrt(L))).clip(-2, 2) / 2.0
+        trail = (close.diff(L) if arithmetic else close.pct_change(L))
+        ts = (trail / (rvol * math.sqrt(L))).clip(-2, 2) / 2.0
         ew = (rets.ewm(span=L, adjust=False).mean() / rvol
               * math.sqrt(L / 2.0)).clip(-2, 2) / 2.0
         pos = pos + w * (ts.fillna(0) + ew.fillna(0)) / 2.0 * scale
@@ -947,7 +954,10 @@ def render_cta():
     class_map = {a["ticker"]: a["class"] for a in assets}
 
     with st.spinner("Computing CTA signals…"):
-        sigs = _compute_signals(tickers, tsmom_lb, ma_fast, ma_slow, don_n, ewma_sp)
+        sigs = _compute_signals(
+            tickers, tsmom_lb, ma_fast, ma_slow, don_n, ewma_sp,
+            rates_tickers=tuple(t for t in tickers
+                                if class_map.get(t) == "Rates"))
 
     if sigs.empty:
         st.warning("No signal data available — check data sources.")
@@ -1208,16 +1218,17 @@ _SCN_SIGMAS = ((2, "Up Big", "#059669"), (1, "Up Small", "#2563EB"),
 
 
 def _scenario_flows(close: pd.Series, vol_tgt: float, weights, vbs: bool,
-                    horizon: int = 21) -> dict:
+                    horizon: int = 21, arithmetic: bool = False) -> dict:
     """Projected CTA flows (Rajat 2026-08-28): extend the price path
     `horizon` bdays under a k·σ TOTAL move (spread evenly, σ = current 21d
     realised vol scaled to the horizon), re-run the ensemble on each
     hypothetical path, difference vs today's position. Returns
     {k: (cum_flow_series_pct_of_book, total_move_pct)}."""
-    rets = close.pct_change()
+    rets = close.diff() if arithmetic else close.pct_change()
     vol_d = float(rets.rolling(21).std().iloc[-1])
     pos_now = float(_ensemble_position(close, vol_tgt, weights=weights,
-                                       vol_by_speed=vbs).iloc[-1])
+                                       vol_by_speed=vbs,
+                                       arithmetic=arithmetic).iloc[-1])
     fut_idx = pd.bdate_range(close.index[-1] + pd.Timedelta(days=1),
                              periods=horizon)
     # Paths need NOISE at the current vol around the drift: a deterministic
@@ -1232,20 +1243,29 @@ def _scenario_flows(close: pd.Series, vol_tgt: float, weights, vbs: bool,
     scn = {}
     for k, _lbl, _c in _SCN_SIGMAS:
         move = k * vol_d * math.sqrt(horizon)          # total k·σ over horizon
-        r_d = (1 + move) ** (1.0 / horizon) - 1        # drift component
         acc = None
         for p in range(n_paths):
-            dr = r_d + vol_d * eps[p]
-            path = float(close.iloc[-1]) * np.cumprod(1 + dr)
+            if arithmetic:                             # yield levels: additive
+                dr = move / horizon + vol_d * eps[p]
+                path = float(close.iloc[-1]) + np.cumsum(dr)
+            else:
+                r_d = (1 + move) ** (1.0 / horizon) - 1
+                dr = r_d + vol_d * eps[p]
+                path = float(close.iloc[-1]) * np.cumprod(1 + dr)
             ext = pd.concat([close, pd.Series(path, index=fut_idx)])
             pos = _ensemble_position(ext, vol_tgt, weights=weights,
-                                     vol_by_speed=vbs).iloc[-horizon:]
+                                     vol_by_speed=vbs,
+                                     arithmetic=arithmetic).iloc[-horizon:]
             acc = pos if acc is None else acc + pos
         pos_avg = acc / n_paths
-        scn[k] = (pos_avg * 100.0, move * 100.0)       # net-length LEVEL path
+        # move display: % for price series, bp for yield levels
+        scn[k] = (pos_avg * 100.0,
+                  move * 100.0 if arithmetic else move * 100.0)
     hist = (_ensemble_position(close, vol_tgt, weights=weights,
-                               vol_by_speed=vbs) * 100.0).dropna().iloc[-85:]
-    return {"hist": hist, "scn": scn, "now": pos_now * 100.0}
+                               vol_by_speed=vbs, arithmetic=arithmetic)
+            * 100.0).dropna().iloc[-85:]
+    return {"hist": hist, "scn": scn, "now": pos_now * 100.0,
+            "unit": "bp" if arithmetic else "%"}
 
 
 def _plot_scenario_flows(res: dict, name: str) -> go.Figure:
@@ -1253,6 +1273,7 @@ def _plot_scenario_flows(res: dict, name: str) -> go.Figure:
     shaded band, conditional scenario level-paths fanning out from today."""
     fig = go.Figure()
     hist, scn = res["hist"], res["scn"]
+    _u = res.get("unit", "%")
     t0 = hist.index[-1]
     fig.add_vrect(x0=hist.index[0], x1=t0, fillcolor="#94A3B8", opacity=0.13,
                   line_width=0)
@@ -1266,7 +1287,7 @@ def _plot_scenario_flows(res: dict, name: str) -> go.Figure:
         s, mv = scn[k]
         xs = [t0] + list(s.index)
         ys = [float(hist.iloc[-1])] + list(s.values)
-        nm = f"{lbl} ({mv:+.1f}%)"
+        nm = f"{lbl} ({mv:+.1f}{_u})" if _u == "%" else f"{lbl} ({mv:+.0f}{_u})"
         fig.add_trace(go.Scatter(
             x=xs, y=ys, name=nm, mode="lines",
             line=dict(color=col, width=2.2 if abs(k) == 2 else 1.7),
@@ -1378,6 +1399,7 @@ def render_cta_positioning():
     _FLW_D = {"1d": 1, "1w": 5, "1m": 21}
     if _zsel:
         _tk_by_name = {a["name"]: a["ticker"] for a in assets}
+        _cls_by_name = {a["name"]: a["class"] for a in assets}
         _zseries, _zrsi, _zovl, _zflw = {}, {}, {}, {}
 
         def _zof(_s):
@@ -1395,15 +1417,18 @@ def render_cta_positioning():
                                    don_n, ewma_sp, years=_yrs)
                 if _h.empty:
                     continue
+                _arith = _cls_by_name.get(_nm) == "Rates"   # yield levels
                 if _zbasis.startswith("Multi"):
                     _w, _vbs = _ENSEMBLE_WEIGHTS[_zwts_lbl]
                     _s = _ensemble_position(_h["close"], vol_tgt,
                                             weights=_w, vol_by_speed=_vbs,
-                                            sized="signal-only" not in _zbasis)
+                                            sized="signal-only" not in _zbasis,
+                                            arithmetic=_arith)
                     if _zovl_on:
                         _z2 = _zof(_ensemble_position(
                             _h["close"], vol_tgt, weights=_w,
-                            vol_by_speed=_vbs, sized=False))
+                            vol_by_speed=_vbs, sized=False,
+                            arithmetic=_arith))
                         if len(_z2):
                             _zovl[_nm] = _z2
                 elif _zbasis.startswith("Risk"):
@@ -1436,8 +1461,9 @@ def render_cta_positioning():
                 if not _h1.empty:
                     _w1, _vbs1 = _ENSEMBLE_WEIGHTS[_zwts_lbl]
                     with st.spinner("Simulating scenario paths…"):
-                        _scn = _scenario_flows(_h1["close"], vol_tgt,
-                                               _w1, _vbs1)
+                        _scn = _scenario_flows(
+                            _h1["close"], vol_tgt, _w1, _vbs1,
+                            arithmetic=_cls_by_name.get(_nm1) == "Rates")
                     st.plotly_chart(_plot_scenario_flows(_scn, _nm1),
                                     use_container_width=True)
                     st.caption(
