@@ -1306,7 +1306,8 @@ _SCN_SIGMAS = ((2, "Up Big", "#059669"), (1, "Up Small", "#2563EB"),
                (-2, "Down Big", "#DC2626"))
 
 
-def _plot_asset_price(px_by_name: dict, cls_by_name: dict) -> go.Figure:
+def _plot_asset_price(px_by_name: dict, cls_by_name: dict,
+                      mva_by_name: dict | None = None) -> go.Figure:
     """Underlying asset chart, drawn ABOVE the main z chart when its checkbox
     is on (Rajat 2026-08-28), same span as the z chart. Single asset = raw
     level (yield % for rates); multi = change since span start (% for
@@ -1329,7 +1330,27 @@ def _plot_asset_price(px_by_name: dict, cls_by_name: dict) -> go.Figure:
             x=s.index, y=y, name=name, mode="lines",
             line=dict(color=col, width=2.2 if single else 1.6),
             hovertemplate=hv))
-    ttl = ("Underlying — level" if single
+        # 3m MVA — red dotted (Rajat 2026-08-28); asset-coloured when
+        # several assets share the chart so lines stay attributable.
+        # Prefer the full-history MVA passed in (no burn-in gap at span
+        # start); transform it the same way as the price line.
+        _m = (mva_by_name or {}).get(name)
+        if _m is not None and len(_m):
+            if single:
+                _mva = _m
+            elif rt:
+                _mva = (_m - s.iloc[0]) * 100.0
+            else:
+                _mva = (_m / s.iloc[0] - 1) * 100.0
+        else:
+            _mva = y.rolling(63).mean()
+        fig.add_trace(go.Scatter(
+            x=_mva.index, y=_mva.values, name=f"{name} 3m MVA", mode="lines",
+            line=dict(color="#DC2626" if single else col, width=1.4,
+                      dash="dot"),
+            opacity=0.9 if single else 0.6, showlegend=single,
+            hovertemplate=f"{name} 3m MVA: %{{y:.3f}}<extra></extra>"))
+    ttl = ("Underlying — level · 3m MVA dotted" if single
            else "Underlying — change since span start (% px · bp rates)")
     fig.update_layout(
         height=300, template="plotly_white",
@@ -1532,11 +1553,15 @@ def render_cta_positioning():
                                    "in the Multi-speed ensemble basis (ignored "
                                    "for the other bases). Slow-tilted ≈ where "
                                    "trend-fund AUM sits.")
-    _zwin = zc4.selectbox("z window", [126, 252, 504, 1260, 2520], index=1,
+    _zwin = zc4.selectbox("z window", [126, 252, 504, 1260, 2520], index=4,
                           key="_cta_z_win",
                           format_func=lambda x: {126: "6m", 252: "1y",
                                                  504: "2y", 1260: "5y",
-                                                 2520: "10y"}[x])
+                                                 2520: "10y"}[x],
+                          help="10y = long-memory stretch (default); short "
+                               "windows flag FRESH regime builds and can "
+                               "print big values (2s10s +4.4σ Jun-25 on 1y "
+                               "as the steepener built from nothing).")
     _zspan = zc5.selectbox("Chart span", [1, 2, 3, 5, 10, 15, 20], index=1,
                            key="_cta_z_span",
                            format_func=lambda x: f"{x}y")
@@ -1560,7 +1585,7 @@ def render_cta_positioning():
     if _zsel:
         _tk_by_name = {a["name"]: a["ticker"] for a in assets}
         _cls_by_name = {a["name"]: a["class"] for a in assets}
-        _zseries, _zrsi, _zovl, _zflw, _zpx = {}, {}, {}, {}, {}
+        _zseries, _zrsi, _zovl, _zflw, _zpx, _zpxm = {}, {}, {}, {}, {}, {}
 
         def _zof(_s):
             _mu = _s.rolling(_zwin, min_periods=_zwin // 2).mean()
@@ -1606,6 +1631,8 @@ def render_cta_positioning():
                         _px = _h["close"].reindex(_z.index).dropna()
                         if len(_px):
                             _zpx[_nm] = _px
+                            _zpxm[_nm] = (_h["close"].rolling(63).mean()
+                                          .reindex(_z.index).dropna())
                     if _zflw_lbl != "off":
                         _f = (_s.diff(_FLW_D[_zflw_lbl]) * 100.0
                               ).reindex(_z.index).dropna()
@@ -1618,7 +1645,8 @@ def render_cta_positioning():
             # → 1 main z (big, RSI as its 2nd panel) → 3 projected flows →
             # 4 simulated flows
             if _zpx:
-                st.plotly_chart(_plot_asset_price(_zpx, _cls_by_name),
+                st.plotly_chart(_plot_asset_price(_zpx, _cls_by_name,
+                                                  _zpxm or None),
                                 use_container_width=True)
             st.plotly_chart(_plot_positioning_z(_zseries, _zw_lbl, _zrsi,
                                                 _zovl or None),
