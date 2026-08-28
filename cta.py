@@ -61,6 +61,8 @@ CTA_ASSETS = [
     {"name": "EUR 5Y Yld",     "ticker": "^ECB5Y",    "class": "Rates"},
     {"name": "EUR 10Y Yld",    "ticker": "^ECB10Y",   "class": "Rates"},
     {"name": "EUR 30Y Yld",    "ticker": "^ECB30Y",   "class": "Rates"},
+    {"name": "UK 2Y Yield",    "ticker": "^UK2YT",    "class": "Rates"},
+    {"name": "UK 10Y Yield",   "ticker": "^UK10YT",   "class": "Rates"},
     {"name": "JPY 10Y",        "ticker": "^JPY10Y",   "class": "Rates"},
     {"name": "US 5Y Real",     "ticker": "^US5YR",    "class": "Rates"},
     {"name": "US 10Y Real",    "ticker": "^US10YR",   "class": "Rates"},
@@ -258,6 +260,20 @@ def _raw_daily_ext(ticker: str, years: int) -> pd.DataFrame:
     # ── Custom series ────────────────────────────────────────────────────────
     if ticker.startswith("custom:"):
         return _fetch_custom_df_cached(ticker[7:])
+
+    # ── UK gilt yields (Rajat 2026-08-28): BoE spot curve via charting's
+    # curve fetcher + recent-months splice — no yfinance/FRED source exists
+    if ticker in ("^UK2YT", "^UK5YT", "^UK10YT", "^UK30YT"):
+        try:
+            import charting as _ch
+            mat = ticker[3:-1]                       # "^UK2YT" → "2Y"
+            s = _ch._uk_recent_splice(_ch._curve_series("UK", mat), mat)
+            s = s.dropna()
+            s.index = pd.DatetimeIndex(s.index).normalize()
+            df = pd.DataFrame({"Close": s.astype(float)})
+            return df[df.index >= cutoff].copy()
+        except Exception:
+            return pd.DataFrame()
 
     # ── Special non-yfinance sources (same as watchlist._raw_daily) ──────────
     if ticker in FRED_MAP:
