@@ -414,6 +414,63 @@ def bootstrap_windows(windows: dict, decisions: list,
     return {"r0": float(x[0]), "rows": rows}
 
 
+# ── Live overlay (Rajat 2026-08-28: "add a button for live prices when
+# needed") — quotes the ZQ/EON/SOA strips through the shared IBKR conn and
+# overrides the settlement months where a live/frozen price resolves. ────────
+_LIVE_SPECS = {
+    "FOMC": ("ZQ", "CBOT", "USD"),
+    "ECB":  ("EON", "ICEEU", "EUR"),
+    "BoE":  ("SOA", "ICEEU", "GBP"),
+}
+
+
+def fetch_live_strips() -> dict:
+    """{cb: {(y,m): rate}} from live IBKR quotes (mdtype 4 = delayed-frozen —
+    live where entitled, last close where shut). Partial results are fine:
+    the caller overlays onto settles month-by-month."""
+    try:
+        from ib_insync import Future
+        import ibkr_conn
+    except Exception as e:
+        return {"err": f"ib_insync unavailable ({e})"}
+    ibl, cerr = ibkr_conn.get_conn()
+    if ibl is None:
+        return {"err": f"IBKR connection failed: {cerr}"}
+    today = date.today()
+    months = []
+    y, m = today.year, today.month
+    for _ in range(14):
+        months.append((y, m))
+        m += 1
+        if m > 12:
+            m, y = 1, y + 1
+    out = {}
+    for cb, (sym, exch, ccy) in _LIVE_SPECS.items():
+        cs = [Future(symbol=sym, exchange=exch, currency=ccy,
+                     lastTradeDateOrContractMonth=f"{qy:04d}{qm:02d}")
+              for (qy, qm) in months]
+        try:
+            ts = ibkr_conn.quotes(cs, mdtype=4, settle_s=4.0, ibl=ibl,
+                                  tag="meetings_live")
+        except Exception as e:
+            out[cb] = {"err": f"{type(e).__name__}: {e}"}
+            continue
+        strip = {}
+        for q, t in zip(months, ts):
+            if t is None:
+                continue
+            px = None
+            for a in ("last", "close"):
+                v = getattr(t, a, None)
+                if v is not None and math.isfinite(v) and 85 <= v <= 100:
+                    px = float(v)
+                    break
+            if px is not None:
+                strip[q] = 100.0 - px
+        out[cb] = {"months": strip}
+    return out
+
+
 # ── UI ───────────────────────────────────────────────────────────────────────
 _TH = ("background:#1E293B;color:#F8FAFC;font-size:11px;font-weight:600;"
        "padding:5px 8px;text-align:right;white-space:nowrap")
@@ -477,14 +534,38 @@ def _path_chart(results: dict):
 
 def render_meetings(host: str = "127.0.0.1", port: int = 7496):
     st.markdown("#### Meetings — hikes & cuts priced, next 12 months")
+    _bc1, _bc2 = st.columns([1.1, 4.9])
+    if _bc1.button("⚡ Live", key="_meet_live_btn",
+                   help="Overlay LIVE strip quotes from IBKR (ZQ/EON/SOA, "
+                        "delayed-frozen) onto the settlement bootstrap. "
+                        "Settles remain the default on load; live lasts "
+                        "until the tab reruns cold."):
+        with st.spinner("Quoting strips via IBKR…"):
+            st.session_state["_meet_live"] = fetch_live_strips()
+    _live = st.session_state.get("_meet_live")
     data = fetch_strips()
     results = {}
+    _live_n = {}
     for cb in _CB:
         d = data.get(cb) or {}
-        if "months" in d:
-            results[cb] = bootstrap(d["months"], cb)
-        else:
+        months = dict(d.get("months") or {})
+        if _live and "months" in (_live.get(cb) or {}):
+            _lv = _live[cb]["months"]
+            months.update(_lv)              # live overrides settle, per month
+            _live_n[cb] = len(_lv)
+        if months:
+            results[cb] = bootstrap(months, cb)
+        elif "err" in d:
             st.warning(f"{cb}: {d.get('err', 'no data')}")
+    if _live:
+        _bits = [f"{cb} {n}m" for cb, n in _live_n.items() if n]
+        _errs = [f"{cb}: {(_live.get(cb) or {}).get('err')}"
+                 for cb in _LIVE_SPECS
+                 if "err" in (_live.get(cb) or {})]
+        _bc2.caption("⚡ live overlay: "
+                     + (" · ".join(_bits) if _bits else "no live quotes")
+                     + ((" · " + " · ".join(_errs)) if _errs else "")
+                     + (f" · {_live.get('err')}" if _live.get("err") else ""))
     tona = fetch_tona(host, port)
     if "windows" in tona:
         boj = bootstrap_windows(tona["windows"], _BOJ)
