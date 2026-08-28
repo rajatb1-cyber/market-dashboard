@@ -60,7 +60,7 @@ _ENSZ_YIELD = {
 }
 
 
-@st.cache_data(ttl=21600, show_spinner=False)
+@st.cache_data(ttl=86400, show_spinner=False)
 def _ens_z10(tkr: str, rates: bool):
     """Slow-tilted vol-wtd ensemble positioning z vs 10y — one value.
     years=15 matches the positioning tab's fetch tier → shared cache."""
@@ -80,7 +80,7 @@ def _ens_z10(tkr: str, rates: bool):
         return None
 
 
-@st.cache_data(ttl=21600, show_spinner=False)
+@st.cache_data(ttl=86400, show_spinner=False)
 def _ens_z10_sprd(tka: str, tkb: str):
     """Positioning z for a curve spread row (long-leg minus short-leg, bp)."""
     try:
@@ -355,7 +355,7 @@ def _fetch_px(tickers: tuple) -> dict:
 # hiccup retries on the next render instead of pinning None in the cache
 # for the ttl (the "US 5s30s blank" bug, 2026-08-17 — same anti-poison rule
 # as the Vol Dash caches).
-@st.cache_data(ttl=21600, show_spinner=False)
+@st.cache_data(ttl=86400, show_spinner=False)
 def _px_hist_c(tkr: str):
     if tkr == "USDCNH=X":                      # no Yahoo daily history
         from watchlist import fetch_chart_data
@@ -431,7 +431,7 @@ def _fx_prevcls(tkrs: tuple) -> dict:
 # signal). Live level/1d: same weighted Δlog computed from the component
 # pairs' live 5m quotes, weights renormalised over the fresh components
 # (≥8 of 12 required), applied to the last completed daily close.
-@st.cache_data(ttl=21600, show_spinner=False)
+@st.cache_data(ttl=86400, show_spinner=False)
 def _bbdxy_hist_c():
     from watchlist import fetch_chart_data
     c = fetch_chart_data("BBDXY_SYNTH", "2y", "1d")["Close"].dropna()
@@ -569,7 +569,7 @@ def _prev_local_close(sym: str, sess: str, back: int = 1):
         return None
 
 
-@st.cache_data(ttl=21600, show_spinner=False)
+@st.cache_data(ttl=86400, show_spinner=False)
 def _yld_hist_c(sym: str):
     rows = _cnbc_bars(sym, "1Y")           # raises on HTTP/parse failure
     out = {}
@@ -1076,7 +1076,8 @@ def render_core_markets():
              "**CTAz** = simulated trend-follower positioning z vs 10y "
              "(Slow-tilted vol-wtd ensemble, same engine as Macro ▸ CTA "
              "Positioning; amber ≥1σ, red ≥2σ; sign = trend direction, "
-             "rates in yield terms; refreshed 6-hourly).  ·  "
+             "rates in yield terms; computed once daily — first board load "
+             "of the day is slower).  ·  "
              "RSI14/RSI30 = Wilder RSI on daily closes excl. the current "
              "session — for rates it runs on the YIELD, so red ≥70 means "
              "yields rich/overbought (bonds sold off). Row shading: purple "
