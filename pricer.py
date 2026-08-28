@@ -1186,11 +1186,13 @@ def render_pricer():
                      if r_.get("dv01") else "—"),
             "Dur": _dur_disp(e["src"], e["mkt"]),
             "ATM": "—" if fut else r_.get("atm_disp", "—"),
-            # FX premium in cents (price pts × 100, e.g. 6E 0.0085 → 0.85¢)
-            # — points are unreadable at FX quote scale (Rajat 2026-08-21)
+            # Premium in cents (price pts × 100) for FX (Rajat 2026-08-21 —
+            # 6E 0.0085 → 0.85¢) AND rates (2026-08-28 — STIR/bond options
+            # are quoted in cents: 0.0625 SOFR put = 6.25¢, Bund 0.36 = 36¢).
+            # Equity/commod stay in points.
             "Prem pts": ("—" if fut else
                          (f"{r_['prem_pts'] * 100:.4g}¢"
-                          if e.get("cls") == "FX"
+                          if e.get("cls") == "FX" or e.get("src") == "rates"
                           else f"{r_['prem_pts']:.4g}")),
             "Prem $": "—" if fut else _fmt_money(r_["prem_usd"]),
             # tenor-normalized premium: total $ prem / √(trading DAYS to
