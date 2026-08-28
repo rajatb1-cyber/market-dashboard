@@ -61,9 +61,19 @@ CTA_ASSETS = [
     {"name": "EUR 5Y Yld",     "ticker": "^ECB5Y",    "class": "Rates"},
     {"name": "EUR 10Y Yld",    "ticker": "^ECB10Y",   "class": "Rates"},
     {"name": "EUR 30Y Yld",    "ticker": "^ECB30Y",   "class": "Rates"},
+    # UK/JP/AU ladders = the same standard curve set as the Charting tab
+    # (Rajat 2026-08-28); US/EUR above use deeper direct sources
     {"name": "UK 2Y Yield",    "ticker": "^UK2YT",    "class": "Rates"},
+    {"name": "UK 5Y Yield",    "ticker": "^UK5YT",    "class": "Rates"},
     {"name": "UK 10Y Yield",   "ticker": "^UK10YT",   "class": "Rates"},
+    {"name": "UK 30Y Yield",   "ticker": "^UK30YT",   "class": "Rates"},
+    {"name": "JPY 2Y",         "ticker": "^JPY2Y",    "class": "Rates"},
+    {"name": "JPY 5Y",         "ticker": "^JPY5Y",    "class": "Rates"},
     {"name": "JPY 10Y",        "ticker": "^JPY10Y",   "class": "Rates"},
+    {"name": "JPY 30Y",        "ticker": "^JPY30Y",   "class": "Rates"},
+    {"name": "AU 2Y Yield",    "ticker": "^AU2YT",    "class": "Rates"},
+    {"name": "AU 5Y Yield",    "ticker": "^AU5YT",    "class": "Rates"},
+    {"name": "AU 10Y Yield",   "ticker": "^AU10YT",   "class": "Rates"},
     {"name": "US 5Y Real",     "ticker": "^US5YR",    "class": "Rates"},
     {"name": "US 10Y Real",    "ticker": "^US10YR",   "class": "Rates"},
     {"name": "US 5Y Breakeven","ticker": "^US5YBE",   "class": "Rates"},
@@ -261,13 +271,24 @@ def _raw_daily_ext(ticker: str, years: int) -> pd.DataFrame:
     if ticker.startswith("custom:"):
         return _fetch_custom_df_cached(ticker[7:])
 
-    # ── UK gilt yields (Rajat 2026-08-28): BoE spot curve via charting's
-    # curve fetcher + recent-months splice — no yfinance/FRED source exists
-    if ticker in ("^UK2YT", "^UK5YT", "^UK10YT", "^UK30YT"):
+    # ── Sovereign-curve yields (Rajat 2026-08-28): UK gilts via BoE spot
+    # curve (+recent splice), JGBs via the MOF curve — charting's curve
+    # fetchers; no yfinance/FRED daily source exists for these
+    _curve_route = {
+        "^UK2YT": ("UK", "2Y"), "^UK5YT": ("UK", "5Y"),
+        "^UK10YT": ("UK", "10Y"), "^UK30YT": ("UK", "30Y"),
+        "^JPY2Y": ("JP", "2Y"), "^JPY5Y": ("JP", "5Y"),
+        "^JPY30Y": ("JP", "30Y"),      # ^JPY10Y stays on JGB_MAP below
+        "^AU2YT": ("AU", "2Y"), "^AU5YT": ("AU", "5Y"),
+        "^AU10YT": ("AU", "10Y"),      # RBA F2 curve has no 30Y
+    }
+    if ticker in _curve_route:
         try:
             import charting as _ch
-            mat = ticker[3:-1]                       # "^UK2YT" → "2Y"
-            s = _ch._uk_recent_splice(_ch._curve_series("UK", mat), mat)
+            cty, mat = _curve_route[ticker]
+            s = _ch._curve_series(cty, mat)
+            if cty == "UK":
+                s = _ch._uk_recent_splice(s, mat)
             s = s.dropna()
             s.index = pd.DatetimeIndex(s.index).normalize()
             df = pd.DataFrame({"Close": s.astype(float)})
