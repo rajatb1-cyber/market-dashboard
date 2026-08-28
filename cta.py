@@ -814,37 +814,25 @@ def _ensemble_position(close: pd.Series, vol_tgt: float,
 
 def _plot_positioning_z(series_by_name: dict, zwin_lbl: str,
                         rsi_by_name: dict | None = None,
-                        overlay_by_name: dict | None = None,
-                        flows_by_name: dict | None = None,
-                        flow_lbl: str = "1w") -> go.Figure:
-    """Multi-asset overlay of positioning z-scores (dotted ±1σ guides, zero
-    line, right-edge last-value labels, most stretched reading in red) with a
-    30d-RSI panel below for the same assets (Rajat 2026-08-26).
-    overlay_by_name: optional companion series per asset drawn DASHED in the
-    same colour (Rajat 2026-08-28: signal-only z next to the position z —
-    the gap between solid and dashed is the vol-sizing channel)."""
+                        overlay_by_name: dict | None = None) -> go.Figure:
+    """Multi-asset overlay of positioning z-scores (dotted ±1/±2σ guides,
+    zero line, right-edge last-value labels, most stretched reading in red)
+    with a 30d-RSI panel below. Rajat 2026-08-28 layout: the z panel is the
+    MAIN chart (big), RSI second; flows render as separate charts below.
+    overlay_by_name: companion series per asset drawn dashed/dotted in the
+    same colour (signal-only z — the gap to the main line is vol-sizing)."""
     has_rsi = bool(rsi_by_name)
-    # single-asset: Rajat 2026-08-28 styling — position z THICK DARK BLUE,
-    # signal-only overlay DOTTED RED (the vol-sizing channel is the gap).
-    # multi-asset keeps per-asset colours (fixed colours would be unreadable).
+    # single-asset styling — position z THICK DARK BLUE, signal-only dotted
+    # light purple. multi-asset keeps per-asset colours.
     single = len(series_by_name) == 1
-    has_flows = bool(flows_by_name)
-    _rows = 1 + int(has_flows) + int(has_rsi)
-    _heights = {1: None, 2: [0.68, 0.32],
-                3: [0.52, 0.24, 0.24]}[_rows]
-    _titles = [None]
-    _flow_row = _rsi_row = None
-    if has_flows:
-        _flow_row = 2
-        _titles.append(f"Simulated flows — {flow_lbl} net position change "
-                       "(% of vol-target book)")
-    if has_rsi:
-        _rsi_row = 2 + int(has_flows)
-        _titles.append("RSI (30d)")
+    _rows = 2 if has_rsi else 1
+    _rsi_row = 2 if has_rsi else None
+    _flow_row = None
     fig = make_subplots(
         rows=_rows, cols=1, shared_xaxes=True,
-        row_heights=_heights, vertical_spacing=0.07,
-        subplot_titles=tuple(_titles) if _rows > 1 else None)
+        row_heights=[0.76, 0.24] if has_rsi else None,
+        vertical_spacing=0.06,
+        subplot_titles=(None, "RSI (30d)") if has_rsi else None)
     ext_name, ext_val = None, 0.0
     for i, (name, s) in enumerate(series_by_name.items()):
         col = "#1E3A8A" if single else _ZCOLORS[i % len(_ZCOLORS)]
@@ -869,16 +857,6 @@ def _plot_positioning_z(series_by_name: dict, zwin_lbl: str,
                 opacity=0.95 if single else 0.75,
                 hovertemplate=f"{name} signal-only: %{{y:.2f}}σ<extra></extra>"),
                 row=1, col=1)
-        fl = (flows_by_name or {}).get(name)
-        if fl is not None and len(fl) and _flow_row:
-            _bcol = (["#059669" if v >= 0 else "#DC2626" for v in fl.values]
-                     if single else col)
-            fig.add_trace(go.Bar(
-                x=fl.index, y=fl.values, name=f"{name} flow",
-                marker=dict(color=_bcol, line=dict(width=0)),
-                opacity=0.85 if single else 0.6, showlegend=False,
-                hovertemplate=f"{name} flow: %{{y:+.1f}}%<extra></extra>"),
-                row=_flow_row, col=1)
         rs = (rsi_by_name or {}).get(name)
         if rs is not None and len(rs) and _rsi_row:
             fig.add_trace(go.Scatter(
@@ -897,9 +875,6 @@ def _plot_positioning_z(series_by_name: dict, zwin_lbl: str,
         fig.add_hline(y=lv, line=dict(color="#DC2626", width=1, dash="dot"),
                       opacity=1.0 if abs(lv) < 1.5 else 0.6, row=1, col=1)
     fig.add_hline(y=0, line=dict(color="#94A3B8", width=1), row=1, col=1)
-    if has_flows:
-        fig.add_hline(y=0, line=dict(color="#94A3B8", width=1),
-                      row=_flow_row, col=1)
     if has_rsi:
         fig.add_hline(y=50, line=dict(color="#CBD5E1", width=1),
                       row=_rsi_row, col=1)
@@ -908,8 +883,7 @@ def _plot_positioning_z(series_by_name: dict, zwin_lbl: str,
                           row=_rsi_row, col=1)
         fig.update_yaxes(range=[0, 100], row=_rsi_row, col=1)
     fig.update_layout(
-        height={1: 430, 2: 560, 3: 680}[_rows], template="plotly_white",
-        barmode="relative",
+        height=700 if has_rsi else 560, template="plotly_white",
         margin=dict(l=10, r=60, t=30, b=10),
         legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0,
                     font=dict(size=11)),
@@ -1234,6 +1208,35 @@ _SCN_SIGMAS = ((2, "Up Big", "#059669"), (1, "Up Small", "#2563EB"),
                (-2, "Down Big", "#DC2626"))
 
 
+def _plot_flows_hist(flows_by_name: dict, flow_lbl: str) -> go.Figure:
+    """Standalone simulated-flows chart (4th chart in the tab layout, Rajat
+    2026-08-28): bars of N-day net position change, % of vol-target book.
+    Single asset: green = adding / red = cutting; multi: per-asset colours."""
+    single = len(flows_by_name) == 1
+    fig = go.Figure()
+    for i, (name, fl) in enumerate(flows_by_name.items()):
+        col = _ZCOLORS[i % len(_ZCOLORS)]
+        bcol = (["#059669" if v >= 0 else "#DC2626" for v in fl.values]
+                if single else col)
+        fig.add_trace(go.Bar(
+            x=fl.index, y=fl.values, name=name,
+            marker=dict(color=bcol, line=dict(width=0)),
+            opacity=0.85 if single else 0.6, showlegend=not single,
+            hovertemplate=f"{name} flow: %{{y:+.1f}}%<extra></extra>"))
+    fig.add_hline(y=0, line=dict(color="#94A3B8", width=1))
+    fig.update_layout(
+        height=280, template="plotly_white",
+        title=dict(text=f"Simulated flows — {flow_lbl} net position change "
+                        "(% of vol-target book)", font=dict(size=13)),
+        margin=dict(l=10, r=20, t=40, b=10),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0,
+                    font=dict(size=11)),
+        hovermode="x unified", barmode="relative")
+    fig.update_yaxes(gridcolor="#EEF1F6", zeroline=False)
+    fig.update_xaxes(showgrid=False)
+    return fig
+
+
 def _scenario_flows(close: pd.Series, vol_tgt: float, weights, vbs: bool,
                     horizon: int = 21, arithmetic: bool = False) -> dict:
     """Projected CTA flows (Rajat 2026-08-28): extend the price path
@@ -1465,9 +1468,10 @@ def render_cta_positioning():
         if _zseries:
             _zw_lbl = {126: "6m", 252: "1y", 504: "2y", 1260: "5y",
                        2520: "10y"}[_zwin]
+            # chart order (Rajat 2026-08-28): 1 main z (big, with RSI as its
+            # 2nd panel) → 3 projected flows → 4 simulated flows
             st.plotly_chart(_plot_positioning_z(_zseries, _zw_lbl, _zrsi,
-                                                _zovl or None,
-                                                _zflw or None, _zflw_lbl),
+                                                _zovl or None),
                             use_container_width=True)
             # ── Projected 1m flows under scenarios (single asset only) ─────
             if len(_zsel) == 1 and _zbasis.startswith("Multi"):
@@ -1499,6 +1503,9 @@ def render_cta_positioning():
             elif len(_zsel) > 1:
                 st.caption("Projected-flows scenarios render when exactly "
                            "one asset is selected.")
+            if _zflw:
+                st.plotly_chart(_plot_flows_hist(_zflw, _zflw_lbl),
+                                use_container_width=True)
             st.caption(
                 "z-score of the simulated CTA position vs its own trailing "
                 f"{_zw_lbl} (mean/σ). Beyond the dotted ±1σ the positioning is "
