@@ -322,7 +322,9 @@ def _raw_daily_ext(ticker: str, years: int) -> pd.DataFrame:
     "store it in a local database so a restart doesn't recompute").
     """
     import daily_store
-    _dk = f"rawext|{ticker}|{years}"
+    # key v3 (2026-09-03): completed-bars-only + FX close-from-next-open fixes
+    # — new prefix invalidates already-stored frames (old rows auto-prune)
+    _dk = f"rawext3|{ticker}|{years}"
     _cached = daily_store.get_df(_dk)
     if _cached is not None:
         return _cached
@@ -389,6 +391,41 @@ def _raw_daily_ext_fetch(ticker: str, years: int) -> pd.DataFrame:
             idx = idx.tz_convert("UTC").tz_localize(None)
         df.index = idx.normalize()
         df = df[~df.index.duplicated(keep="last")]
+        # Yahoo FX daily bars: the Close column ECHOES the same day's OPEN,
+        # not the 5pm-ET session close (verified 2026-09-03 vs hourly bars:
+        # Sep-2 printed C160.20/O160.20 while the session closed ~158.7;
+        # Aug-31 even shows Close>High). The true 5pm-ET close IS the next
+        # day's Open — rebuild FX closes from it. Weekend caveat: Friday's
+        # close becomes Sunday's 5pm-ET open (gap risk ~pips, fine for slow
+        # positioning signals). Must run BEFORE the today-row drop so today's
+        # row donates its (stable) Open as yesterday's close. start=-based
+        # downloads OMIT today's row — top the tail up from a tiny period
+        # fetch so the last completed day always gets its true close.
+        if ticker.endswith("=X") and len(df) > 1 and "Open" in df.columns:
+            if df.index[-1] < pd.Timestamp(date.today()):
+                try:
+                    t5 = yf.download(ticker, period="5d", interval="1d",
+                                     auto_adjust=True, progress=False,
+                                     multi_level_index=False)
+                    if isinstance(t5.columns, pd.MultiIndex):
+                        t5.columns = t5.columns.get_level_values(0)
+                    i5 = pd.DatetimeIndex(t5.index)
+                    if i5.tz is not None:
+                        i5 = i5.tz_convert("UTC").tz_localize(None)
+                    t5.index = i5.normalize()
+                    new = t5[~t5.index.isin(df.index)]
+                    if not new.empty:
+                        df = pd.concat(
+                            [df, new[[c for c in df.columns if c in new.columns]]]
+                        ).sort_index()
+                except Exception:
+                    pass
+            df["Close"] = df["Open"].shift(-1).fillna(df["Close"])
+        # COMPLETED daily bars only (Rajat 2026-09-03: USDJPY's last point
+        # "looks wrong" — yahoo's daily feed includes TODAY'S in-progress bar,
+        # snapshotted at fetch time and then pinned for the day by daily_store.
+        # A positioning z / RSI must never treat a half-day bar as a close.)
+        df = df[df.index < pd.Timestamp(date.today())]
         return df[df.index >= cutoff].copy()
 
     def _covers(df: pd.DataFrame) -> bool:
@@ -1378,10 +1415,14 @@ def _plot_asset_price(px_by_name: dict, cls_by_name: dict,
     return fig
 
 
-def _plot_flows_hist(flows_by_name: dict, flow_lbl: str) -> go.Figure:
+def _plot_flows_hist(flows_by_name: dict, flow_lbl: str,
+                     future: tuple | None = None) -> go.Figure:
     """Standalone simulated-flows chart (4th chart in the tab layout, Rajat
     2026-08-28): bars of N-day net position change, % of vol-target book.
-    Single asset: green = adding / red = cutting; multi: per-asset colours."""
+    Single asset: green = adding / red = cutting; multi: per-asset colours.
+    `future` (Rajat 2026-09-03) = (flow_series, scn_lbl) — expected flows
+    along the chosen scenario's path, drawn PAST today as faded bars with a
+    dotted divider, extending the same x-axis into the next 21bd."""
     single = len(flows_by_name) == 1
     fig = go.Figure()
     for i, (name, fl) in enumerate(flows_by_name.items()):
@@ -1393,11 +1434,22 @@ def _plot_flows_hist(flows_by_name: dict, flow_lbl: str) -> go.Figure:
             marker=dict(color=bcol, line=dict(width=0)),
             opacity=0.85 if single else 0.6, showlegend=not single,
             hovertemplate=f"{name} flow: %{{y:+.1f}}%<extra></extra>"))
+    _t = f"Simulated flows — {flow_lbl} net position change (% of vol-target book)"
+    if future is not None:
+        _ff, _slbl = future
+        fig.add_trace(go.Bar(
+            x=_ff.index, y=_ff.values, name=f"projected ({_slbl})",
+            marker=dict(color=["#059669" if v >= 0 else "#DC2626"
+                               for v in _ff.values], line=dict(width=0)),
+            opacity=0.35, showlegend=True,
+            hovertemplate=f"projected ({_slbl}): %{{y:+.1f}}%<extra></extra>"))
+        _t0 = max(fl.index[-1] for fl in flows_by_name.values())
+        fig.add_vline(x=_t0, line=dict(color="#94A3B8", width=1, dash="dot"))
+        _t += f" · projected under {_slbl}"
     fig.add_hline(y=0, line=dict(color="#94A3B8", width=1))
     fig.update_layout(
         height=280, template="plotly_white",
-        title=dict(text=f"Simulated flows — {flow_lbl} net position change "
-                        "(% of vol-target book)", font=dict(size=13)),
+        title=dict(text=_t, font=dict(size=13)),
         margin=dict(l=10, r=20, t=40, b=10),
         legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0,
                     font=dict(size=11)),
@@ -1666,6 +1718,7 @@ def render_cta_positioning():
                                                 _zovl or None),
                             use_container_width=True)
             # ── Projected 1m flows under scenarios (single asset only) ─────
+            _scn_res = None
             if len(_zsel) == 1 and _zbasis.startswith("Multi"):
                 _nm1 = _zsel[0]
                 st.markdown(f"##### Projected 1m flows — {_nm1}")
@@ -1680,6 +1733,7 @@ def render_cta_positioning():
                         _scn = _scenario_flows(
                             _h1["close"], vol_tgt, _w1, _vbs1,
                             arithmetic=_ar1)
+                    _scn_res = _scn
                     st.plotly_chart(_plot_scenario_flows(_scn, _nm1),
                                     use_container_width=True)
                     st.caption(
@@ -1698,7 +1752,29 @@ def render_cta_positioning():
                 st.caption("Projected-flows scenarios render when exactly "
                            "one asset is selected.")
             if _zflw:
-                st.plotly_chart(_plot_flows_hist(_zflw, _zflw_lbl),
+                # scenario-extended future flows (Rajat 2026-09-03): same
+                # chart, x-axis extended 21bd past today along the chosen
+                # scenario's expected position path — Flat by default
+                _fut = None
+                if _scn_res is not None:
+                    _scn_lbls = [lbl for _k, lbl, _c in _SCN_SIGMAS]
+                    _spick = st.selectbox(
+                        "Projection assumption (next 21bd)", _scn_lbls,
+                        index=_scn_lbls.index("Flat Market"),
+                        key="_cta_scn_pick",
+                        help="Which k·σ total-move scenario the faded future "
+                             "bars follow — the same paths as the fan chart "
+                             "above (Up/Down Small = ±1σ, Big = ±2σ over "
+                             "21bd; Flat = 0σ drift, noise only).")
+                    _kpick = next(_k for _k, lbl, _c in _SCN_SIGMAS
+                                  if lbl == _spick)
+                    if _kpick in _scn_res["scn"]:
+                        _sfut = _scn_res["scn"][_kpick][0]
+                        _ext = pd.concat([_scn_res["hist"], _sfut])
+                        _ff = _ext.diff(_FLW_D[_zflw_lbl]).loc[_sfut.index]
+                        if len(_ff):
+                            _fut = (_ff, _spick)
+                st.plotly_chart(_plot_flows_hist(_zflw, _zflw_lbl, _fut),
                                 use_container_width=True)
             st.caption(
                 "z-score of the simulated CTA position vs its own trailing "
