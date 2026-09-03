@@ -1460,7 +1460,8 @@ def _plot_flows_hist(flows_by_name: dict, flow_lbl: str,
 
 
 def _scenario_flows(close: pd.Series, vol_tgt: float, weights, vbs: bool,
-                    horizon: int = 21, arithmetic: bool = False) -> dict:
+                    horizon: int = 21, arithmetic: bool = False,
+                    hist_days: int = 85) -> dict:
     """Projected CTA flows (Rajat 2026-08-28): extend the price path
     `horizon` bdays under a k·σ TOTAL move (spread evenly, σ = current 21d
     realised vol scaled to the horizon), re-run the ensemble on each
@@ -1503,9 +1504,11 @@ def _scenario_flows(close: pd.Series, vol_tgt: float, weights, vbs: bool,
         # move display: % for price series, bp for yield levels
         scn[k] = (pos_avg * 100.0,
                   move * 100.0 if arithmetic else move * 100.0)
+    # 85d ≈ 4m default keeps the GS-format 4:1 history-to-fan proportion;
+    # longer windows are a one-off context option (Rajat 2026-09-03)
     hist = (_ensemble_position(close, vol_tgt, weights=weights,
                                vol_by_speed=vbs, arithmetic=arithmetic)
-            * 100.0).dropna().iloc[-85:]
+            * 100.0).dropna().iloc[-hist_days:]
     return {"hist": hist, "scn": scn, "now": pos_now * 100.0,
             "unit": "bp" if arithmetic else "%"}
 
@@ -1721,7 +1724,15 @@ def render_cta_positioning():
             _scn_res = None
             if len(_zsel) == 1 and _zbasis.startswith("Multi"):
                 _nm1 = _zsel[0]
-                st.markdown(f"##### Projected 1m flows — {_nm1}")
+                _hc1, _hc2 = st.columns([4.2, 0.8])
+                _hc1.markdown(f"##### Projected 1m flows — {_nm1}")
+                _HIST_D = {"4m": 85, "1y": 252, "2y": 504, "5y": 1260}
+                _hist_lbl = _hc2.selectbox(
+                    "History", list(_HIST_D), index=0, key="_cta_scn_hist",
+                    label_visibility="collapsed",
+                    help="Grey realized-net-length history behind the fan. "
+                         "4m keeps the GS-format proportion (21bd fan stays "
+                         "readable); longer windows are for one-off context.")
                 _h1 = _hist_signals(_tk_by_name[_nm1], tsmom_lb, ma_fast,
                                     ma_slow, don_n, ewma_sp, years=5,
                                     rates=_cls_by_name.get(_nm1) == "Rates")
@@ -1732,7 +1743,8 @@ def render_cta_positioning():
                     with st.spinner("Simulating scenario paths…"):
                         _scn = _scenario_flows(
                             _h1["close"], vol_tgt, _w1, _vbs1,
-                            arithmetic=_ar1)
+                            arithmetic=_ar1,
+                            hist_days=_HIST_D[_hist_lbl])
                     _scn_res = _scn
                     st.plotly_chart(_plot_scenario_flows(_scn, _nm1),
                                     use_container_width=True)
