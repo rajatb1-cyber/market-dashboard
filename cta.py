@@ -1726,15 +1726,19 @@ def render_cta_positioning():
                 _nm1 = _zsel[0]
                 _hc1, _hc2 = st.columns([4.2, 0.8])
                 _hc1.markdown(f"##### Projected 1m flows — {_nm1}")
-                _HIST_D = {"4m": 85, "1y": 252, "2y": 504, "5y": 1260}
+                _HIST_D = {"4m": 85, "1y": 252, "2y": 504, "5y": 1260,
+                           "10y": 2520}
                 _hist_lbl = _hc2.selectbox(
                     "History", list(_HIST_D), index=0, key="_cta_scn_hist",
                     label_visibility="collapsed",
                     help="Grey realized-net-length history behind the fan. "
                          "4m keeps the GS-format proportion (21bd fan stays "
                          "readable); longer windows are for one-off context.")
+                # fetch depth follows the history window (+~2y signal warmup)
+                _need1 = _HIST_D[_hist_lbl] // 252 + 2
+                _yrs1 = next((k for k in (5, 7, 10, 15) if k >= _need1), 15)
                 _h1 = _hist_signals(_tk_by_name[_nm1], tsmom_lb, ma_fast,
-                                    ma_slow, don_n, ewma_sp, years=5,
+                                    ma_slow, don_n, ewma_sp, years=_yrs1,
                                     rates=_cls_by_name.get(_nm1) == "Rates")
                 if not _h1.empty:
                     _w1, _vbs1 = _ENSEMBLE_WEIGHTS[_zwts_lbl]
