@@ -179,8 +179,9 @@ def parse_structure(desc: str):
         ratio = (int(mrat.group(1)), int(mrat.group(2)))
         s = s.replace(mrat.group(0), " ")
 
-    # strikes: numbers (int/decimal), typically K1/K2/...
-    ks = [float(x) for x in re.findall(r"\d+(?:\.\d+)?", s)]
+    # strikes: numbers (int/decimal), typically K1/K2/... — leading-dot
+    # decimals included (".00637" read as 637 broke 6J entry, 2026-09-03)
+    ks = [float(x) for x in re.findall(r"\d*\.\d+|\d+", s)]
     if not ks:
         return None, "no strikes found"
 
@@ -560,6 +561,20 @@ def price_structure(src: str, mkt: str, expiry: date, legs: list, lots: int,
             return K
         return K - (F - F_set) if src == "rates" else K * (F_set / F)
 
+    # Off-scale strike guard (2026-08-31: "USDJPY 157/155 ps" priced as garbage —
+    # 6J is NATIVE JPY/USD ≈ 0.0064, so display-convention strikes are ~24,000×
+    # off-scale; the smile flat-extrapolated and the scenario later crashed on a
+    # negative-F grid). Lognormal markets only — rates strikes live near F anyway.
+    if src != "rates":
+        for _q, _cp, _K in legs:
+            if not (F / 3.0 < _K < 3.0 * F):
+                _hint = ""
+                if f"v2:{mkt}" in _vd._DISPLAY_INVERT:
+                    _hint = (f" — this market prices in NATIVE terms "
+                             f"(F≈{F:g}); for display-convention levels use "
+                             f"1/level (e.g. {1.0 / _K:g}), and flip put↔call")
+                return {"err": f"strike {_K:g} is far off-scale vs forward "
+                               f"{F:g}{_hint}"}
     greeks_fn = _ro._bachelier_greeks if src == "rates" else _ov2._black76_greeks
     leg_rows, tot = [], {k: 0.0 for k in ("price", "delta", "vega", "theta")}
     for qty, cp, K in legs:
@@ -655,6 +670,32 @@ def price_future(src: str, mkt: str, lots: int, live: bool = True):
             "theta_usd": 0.0, "vega_usd": 0.0}
 
 
+# ── Cost per 100 of max payoff (Rajat 2026-09-03: JPY prem in ¢/yen is
+# unreadable — "per 100 units of pnl what is the cost"). Settlement payoff is
+# piecewise linear in F, so its max sits at a strike (or F=0) unless net long
+# calls make it unbounded. Lots-invariant; unit-free, so it works across FX/
+# rates/equity alike. ────────────────────────────────────────────────────────
+def _max_payoff_pts(legs: list) -> float | None:
+    """Max gross settlement value (pts) of legs [(qty, 'C'/'P', K), …];
+    None when unbounded (net long calls)."""
+    if not legs:
+        return None
+    if sum(q for q, cp, _ in legs if cp == "C") > 1e-9:
+        return None
+
+    def _val(s):
+        return sum(q * (max(s - k, 0.0) if cp == "C" else max(k - s, 0.0))
+                   for q, cp, k in legs)
+    return max(_val(s) for s in {0.0} | {k for _, _, k in legs})
+
+
+def _cost_per_100(prem_pts: float, legs: list) -> str:
+    mx = _max_payoff_pts(legs or [])
+    if not mx or mx <= 1e-12:
+        return "—"
+    return f"{prem_pts / mx * 100:.1f}"
+
+
 # ── Scenario engine (phase 2, Rajat 2026-08-04): reprice ONE structure's stored
 # legs under shifted F / vol / time. Sticky-strike: each leg keeps ITS OWN fitted
 # IV (scaled by the vol bump) — standard quick-scenario mechanics, disclosed in
@@ -709,6 +750,8 @@ def _render_scenario(b: dict) -> None:
         _hi = max(_kmax, F0) + _pad
     else:
         _lo, _hi = F0 - 2.5 * sig_move, F0 + 2.5 * sig_move
+    if src != "rates":
+        _lo = max(_lo, F0 * 1e-3)   # lognormal world: F-grid must stay positive
     Fs = np.linspace(_lo, _hi, 161)
     fig = go.Figure()
     for T_, lbl, col, dash in ((T0, "today", "#2563EB", "solid"),
@@ -1195,6 +1238,11 @@ def render_pricer():
                       if e.get("cls") == "FX" or e.get("src") == "rates"
                       else f"{r_['prem_pts']:.4g}pt")),
             "Prem $": "—" if fut else _fmt_money(r_["prem_usd"]),
+            # cost per 100 of max settlement payoff: a spread that pays 100
+            # max and costs 28.9 shows 28.9 — unit-free odds read; "—" when
+            # the payoff is unbounded (net long calls)
+            "¢/100": ("—" if fut else
+                      _cost_per_100(r_["prem_pts"], e.get("legs"))),
             # tenor-normalized premium: total $ prem / √(trading DAYS to
             # expiry) — e.g. 20 busdays → prem/√20 — for comparing
             # structures across expiries on the Risk/VaR daily-vol clock
@@ -1225,7 +1273,7 @@ def render_pricer():
         import html as _hesc
         _COLS = ["#", "Market", "Expiry", "Days", "Lots", "Structure",
                  "Fwd", "Fwd yld", "K yld", "DV01", "Dur", "ATM",
-                 "Prem", "Prem $", "Prem $/√T", "Δ %", "Δ $",
+                 "Prem", "Prem $", "¢/100", "Prem $/√T", "Δ %", "Δ $",
                  "θ $/d", "Vega $"]
         _LEFT = {"Market", "Structure"}
         _css = (
@@ -1336,7 +1384,9 @@ def render_pricer():
             "= settlement forward shifted to the yahoo quote. Δ$ per 1.0pt "
             "(rates per 1bp yield; futures lines = lots × multiplier); θ per "
             "calendar day; vega per 1pp IV; Δ totals kept in native units. "
-            "European contracts (€/£) unconverted. ≈ = surface-interpolated "
+            "European contracts (€/£) unconverted. ¢/100 = premium as a "
+            "share of the structure's max settlement payoff (costs X to "
+            "make 100; — when unbounded). ≈ = surface-interpolated "
             "date. Lines reprice on every rerun — this is a live view.")
 
     # ── portfolios (saved line sets) ──────────────────────────────────────────
