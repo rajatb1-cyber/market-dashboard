@@ -96,7 +96,7 @@ def _to_natural(proxy: str, x: float) -> float:
 
 def compute(book, fx, sel_fut, sel_fx, products, ivols, proxies,
             shocks: dict, fred_key=None, propagate=True, window="6m",
-            live=True) -> dict:
+            live=True, event_weight: float = 1.0) -> dict:
     """shocks = {proxy: natural-unit move} (only nonzero entries count).
     Returns {factors, rows, total, notes, obs}."""
     import risk as _risk
@@ -131,7 +131,29 @@ def compute(book, fx, sel_fut, sel_fx, products, ivols, proxies,
             # (2026-09-04: "JPY move does not make sense given I have a higher
             # implied vol of USDJPY than EURUSD" — pure-historical cov ignored
             # his params). Historical std only where no param vol maps.
-            Rm = sub.corr()
+            # Event mode (Rajat 2026-09-04: "NFP is worth 3 days"): today is a
+            # macro-event day, so blend R toward the NFP-DAY-ONLY correlation
+            # estimated from the FULL fetched history (~40 first-Fridays) with
+            # weight 1−1/w. In-window row-weighting was tried first and moves
+            # nothing (a 6m window holds ~5 NFP days: corr 0.59→0.58), while
+            # the event-day estimate itself is dramatically different
+            # (all-days corr(EUR,JPY) 0.59 vs NFP-days-only 0.95).
+            cols = s_av + u_av
+            Rm = sub[cols].corr()
+            wstd = {p: float(sub[p].std()) for p in cols}
+            if event_weight and event_weight > 1:
+                dfl = pd.DataFrame({p: rets[p] for p in cols}).dropna(how="any")
+                dev = dfl[(dfl.index.weekday == 4) & (dfl.index.day <= 7)]
+                if len(dev) >= 12:
+                    a = 1.0 - 1.0 / float(event_weight)
+                    Rm = (1.0 - a) * Rm + a * dev.corr()
+                    notes.append(
+                        f"event mode ×{event_weight:g}: correlations blended "
+                        f"{a:.0%} toward the NFP-day-only estimate "
+                        f"(n={len(dev)} NFP days)")
+                else:
+                    notes.append(f"event mode skipped — only {len(dev)} NFP "
+                                 "days in history")
             vsrc = {}
 
             def _fac_vol(p):
@@ -147,7 +169,7 @@ def compute(book, fx, sel_fut, sel_fx, products, ivols, proxies,
                     vsrc[p] = "param"
                     return float(iv) / 100.0 / 16.0     # √256 = 16
                 vsrc[p] = "hist"
-                return float(sub[p].std())
+                return float(wstd[p])
 
             sig = {p: _fac_vol(p) for p in s_av + u_av}
             Dx = np.array([sig[p] for p in s_av])

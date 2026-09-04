@@ -2056,6 +2056,7 @@ def render_scenario():
             st.session_state["_rsc_prop"] = bool(_pend.get("propagate", True))
             if _pend.get("window") in risk_div.WINDOWS:
                 st.session_state["_rsc_win"] = _pend["window"]
+            st.session_state["_rsc_evw"] = float(_pend.get("event_weight", 3.0))
         _bookf = [p for p, _ in _scf]
         _allf = list(dict.fromkeys(
             _bookf + list(risk_div._RATE_FETCH) + list(risk_div._YF)
@@ -2083,13 +2084,20 @@ def render_scenario():
                     step=1.0 if _ir else 0.25, format="%.2f",
                     key=_gk, label_visibility="collapsed",
                     **({} if _gk in st.session_state else {"value": 0.0}))
-        _sc1, _sc2, _sc3 = st.columns([1.4, 1.0, 1.2])
+        _sc1, _sc2, _sce, _sc3 = st.columns([1.3, 0.85, 0.85, 1.0])
         _prop = _sc1.checkbox(
             "propagate via correlations", key="_rsc_prop",
             **({} if "_rsc_prop" in st.session_state else {"value": True}))
         _swin = _sc2.selectbox(
             "corr window", list(risk_div.WINDOWS), key="_rsc_win",
             **({} if "_rsc_win" in st.session_state else {"index": 2}))
+        _evw = _sce.number_input(
+            "event weight", min_value=1.0, max_value=10.0, step=1.0,
+            key="_rsc_evw",
+            help="NFP days (first Friday of each month) count ×N in the "
+                 "correlation estimate — tilts the implied moves toward "
+                 "macro-event-day co-movement. 1 = plain history.",
+            **({} if "_rsc_evw" in st.session_state else {"value": 3.0}))
         _sc3.markdown("<div style='height:12px'></div>", unsafe_allow_html=True)
         if _sc3.button("🎯 Run scenarios", key="_rsc_run"):
             _scns = []
@@ -2113,7 +2121,8 @@ def render_scenario():
                         _out.append((_lbl, risk_scenario.compute(
                             book, fx, set(eff_fut), set(eff_fx), eff_products,
                             eff_ivols, eff_proxies, _shk, _fred_s,
-                            propagate=_prop, window=_swin)))
+                            propagate=_prop, window=_swin,
+                            event_weight=_evw)))
                 st.session_state["_risk_scn_multi"] = _out
         # ── saved scenario sets (persisted to risk_scenarios.json) ───────────
         _sets = _load_scn_sets()
@@ -2146,7 +2155,8 @@ def render_scenario():
                     _shocks.append({p: v for p, v in _col.items() if v})
                 _sets[_sname.strip()] = {
                     "factors": list(_facs), "shocks": _shocks,
-                    "propagate": bool(_prop), "window": _swin}
+                    "propagate": bool(_prop), "window": _swin,
+                    "event_weight": float(_evw)}
                 _save_scn_sets(_sets)
                 st.success(f"Saved '{_sname.strip()}' "
                            f"({sum(1 for s in _shocks if s)} scenario(s)).")
