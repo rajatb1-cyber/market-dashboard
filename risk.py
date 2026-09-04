@@ -977,6 +977,11 @@ def _one_day_var(product, ivol, risk):
 def _business_dte(expiry):
     """Business (working) days from today to expiry — Fri→Mon = 1, not 3. None if unparseable."""
     try:
+        # live-snapshot json round-trip turns "20260915" into the int 20260915,
+        # which pd.to_datetime reads as NANOSECONDS since epoch → 01-Jan-70
+        # (Rajat 2026-09-05) — normalize to the yyyymmdd string first
+        if expiry is not None and not isinstance(expiry, str) and pd.notna(expiry):
+            expiry = str(int(expiry))
         exp = pd.to_datetime(expiry, errors="coerce")
         if pd.isna(exp):
             return None
@@ -2805,10 +2810,17 @@ def render_risk():
                 lvl = _ulvl.get(_root_of(und))
                 _strike = r.get("Strike")
                 strike = float(_strike) if pd.notna(_strike) else None
-                _exp = pd.to_datetime(r.get("Expiry"), errors="coerce")
+                _expv = r.get("Expiry")
+                if (_expv is not None and not isinstance(_expv, str)
+                        and pd.notna(_expv)):
+                    _expv = str(int(_expv))          # int yyyymmdd → epoch bug
+                _exp = pd.to_datetime(_expv, errors="coerce")
                 expy = _exp.strftime("%d-%b-%y") if pd.notna(_exp) else "—"
                 _orows.append((r["Symbol"], und, strike, expy, lvl, prem, dte, pst))
-            _orows.sort(key=lambda x: (x[6] if x[6] is not None else 10 ** 9))  # soonest expiry first
+            # class+family order like the other position tables (Rajat
+            # 2026-09-05; was soonest-expiry-first) — product via underlying
+            _orows.sort(key=lambda x: _inst_sort_key(
+                x[0], _guess_product(x[1] or x[0], x[1] or x[0])))
             st.markdown(_options_box_html(_orows), unsafe_allow_html=True)
             st.caption("**Prem** & **Prem / √t** are **signed** (long +, short −); the **Total** row is the "
                        "net book premium.  ·  **Fut Level** = underlying future's ~live level (yfinance active "
