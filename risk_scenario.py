@@ -19,7 +19,9 @@ from __future__ import annotations
 
 _BUILD = "2026-09-04.1"
 
+import json
 import math
+import os
 import time
 
 import numpy as np
@@ -27,6 +29,46 @@ import pandas as pd
 
 import risk_div
 import risk_options
+
+# ── Event registry (Rajat 2026-09-04: "ability to add event weights and
+# event specific correlations"). Each event identifies its HISTORICAL days
+# via a rule or an explicit date list (past dates drive the estimation;
+# future ones are harmless), plus a default weight ("NFP is worth 3 days").
+# Extend by editing risk_events.json — no code change needed. ────────────────
+_EVENTS_PATH = os.path.join(os.path.dirname(__file__), "risk_events.json")
+_DEFAULT_EVENTS = {
+    "NFP": {"rule": "first_friday", "weight": 3},
+    "FOMC": {"weight": 4, "dates": [
+        "2024-01-31", "2024-03-20", "2024-05-01", "2024-06-12", "2024-07-31",
+        "2024-09-18", "2024-11-07", "2024-12-18",
+        "2025-01-29", "2025-03-19", "2025-05-07", "2025-06-18", "2025-07-30",
+        "2025-09-17", "2025-10-29", "2025-12-10",
+        "2026-01-28", "2026-03-18", "2026-04-29", "2026-06-17", "2026-07-29",
+        "2026-09-16", "2026-10-28", "2026-12-09"]},
+}
+
+
+def load_events() -> dict:
+    try:
+        with open(_EVENTS_PATH) as f:
+            d = json.load(f)
+        if d:
+            return d
+    except Exception:
+        pass
+    try:
+        with open(_EVENTS_PATH, "w") as f:
+            json.dump(_DEFAULT_EVENTS, f, indent=2)
+    except Exception:
+        pass
+    return dict(_DEFAULT_EVENTS)
+
+
+def _event_mask(idx: pd.DatetimeIndex, cfg: dict) -> np.ndarray:
+    if cfg.get("rule") == "first_friday":
+        return (idx.weekday == 4) & (idx.day <= 7)
+    ds = {pd.Timestamp(d).normalize() for d in cfg.get("dates", [])}
+    return idx.normalize().isin(list(ds))
 
 # proxy-returns memo so a 4-scenario batch fetches history ONCE (yf+FRED)
 _RET_MEMO: dict = {}
@@ -96,7 +138,8 @@ def _to_natural(proxy: str, x: float) -> float:
 
 def compute(book, fx, sel_fut, sel_fx, products, ivols, proxies,
             shocks: dict, fred_key=None, propagate=True, window="6m",
-            live=True, event_weight: float = 1.0) -> dict:
+            live=True, event: str | None = None,
+            event_weight: float = 1.0) -> dict:
     """shocks = {proxy: natural-unit move} (only nonzero entries count).
     Returns {factors, rows, total, notes, obs}."""
     import risk as _risk
@@ -131,29 +174,40 @@ def compute(book, fx, sel_fut, sel_fx, products, ivols, proxies,
             # (2026-09-04: "JPY move does not make sense given I have a higher
             # implied vol of USDJPY than EURUSD" — pure-historical cov ignored
             # his params). Historical std only where no param vol maps.
-            # Event mode (Rajat 2026-09-04: "NFP is worth 3 days"): today is a
-            # macro-event day, so blend R toward the NFP-DAY-ONLY correlation
-            # estimated from the FULL fetched history (~40 first-Fridays) with
-            # weight 1−1/w. In-window row-weighting was tried first and moves
-            # nothing (a 6m window holds ~5 NFP days: corr 0.59→0.58), while
-            # the event-day estimate itself is dramatically different
-            # (all-days corr(EUR,JPY) 0.59 vs NFP-days-only 0.95).
+            # Event mode (Rajat 2026-09-04: "NFP is worth 3 days" → registry
+            # of events): today is <event> day, so blend the correlation
+            # matrix AND per-factor vol multiples toward the event-day-only
+            # estimates from the FULL fetched history, both with weight
+            # a = 1−1/w (shrinkage: the event-day sample is ~20-30 days).
+            # In-window row-weighting was tried first and moves nothing (a 6m
+            # window holds ~5 NFP days). Measured 2026-09-04: NFP-day
+            # corr(EUR,JPY) 0.40 vs 0.58 all-days, corr(EUR,SPX) −0.50 vs
+            # 0.00; NFP-day var multiples US2y ×5, SPX ×3, JPY ×1.7, EUR ×0.8.
             cols = s_av + u_av
             Rm = sub[cols].corr()
             wstd = {p: float(sub[p].std()) for p in cols}
-            if event_weight and event_weight > 1:
+            vmult = {p: 1.0 for p in cols}
+            if event and event_weight and event_weight > 1:
+                cfg = load_events().get(event) or {}
                 dfl = pd.DataFrame({p: rets[p] for p in cols}).dropna(how="any")
-                dev = dfl[(dfl.index.weekday == 4) & (dfl.index.day <= 7)]
+                msk = _event_mask(dfl.index, cfg)
+                dev, dno = dfl[msk], dfl[~msk]
                 if len(dev) >= 12:
                     a = 1.0 - 1.0 / float(event_weight)
                     Rm = (1.0 - a) * Rm + a * dev.corr()
+                    for p in cols:
+                        sn = float(dno[p].std())
+                        me = (float(dev[p].std()) / sn
+                              if sn and math.isfinite(sn) else 1.0)
+                        vmult[p] = 1.0 + a * (me - 1.0)
                     notes.append(
-                        f"event mode ×{event_weight:g}: correlations blended "
-                        f"{a:.0%} toward the NFP-day-only estimate "
-                        f"(n={len(dev)} NFP days)")
+                        f"{event} mode ×{event_weight:g}: corr blended "
+                        f"{a:.0%} toward {event}-day-only (n={len(dev)}); "
+                        "vols × event multiples: "
+                        + ", ".join(f"{p} ×{vmult[p]:.2f}" for p in cols))
                 else:
-                    notes.append(f"event mode skipped — only {len(dev)} NFP "
-                                 "days in history")
+                    notes.append(f"{event} mode skipped — only {len(dev)} "
+                                 f"{event} day(s) in history")
             vsrc = {}
 
             def _fac_vol(p):
@@ -167,9 +221,9 @@ def compute(book, fx, sel_fut, sel_fx, products, ivols, proxies,
                     iv = sum(c) / len(c) if c else None
                 if iv:
                     vsrc[p] = "param"
-                    return float(iv) / 100.0 / 16.0     # √256 = 16
+                    return float(iv) / 100.0 / 16.0 * vmult[p]  # √256 = 16
                 vsrc[p] = "hist"
-                return float(wstd[p])
+                return float(wstd[p]) * vmult[p]
 
             sig = {p: _fac_vol(p) for p in s_av + u_av}
             Dx = np.array([sig[p] for p in s_av])
