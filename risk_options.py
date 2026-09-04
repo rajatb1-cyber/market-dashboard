@@ -22,7 +22,7 @@ contracts, the position's saved yield proxy × DV01 for bond futures).
 """
 from __future__ import annotations
 
-_BUILD = "2026-08-24.6"    # shown in the tab — bump when this module changes
+_BUILD = "2026-09-04.1"   # shown in the tab — bump when this module changes
 
 import math
 import re
@@ -58,6 +58,9 @@ _ROOT_MAP = {
     # instead of the contract "SR3U6" — seen 2026-08-24)
     "SOFR3": ("rates", "SOFR"), "SONIA3": ("rates", "SONIA"),
     "EUU": ("v2", "EUR"),
+    # FX FOP roots ≠ future roots (EUU/JPU/GBU — see reference_fx_fop_ibkr);
+    # JPUV6 puts hit the unmapped-root skip 2026-09-04
+    "JPU": ("v2", "JPY"), "GBU": ("v2", "GBP"),
 }
 # stir_bars.db symbol for each STIR pricer market
 _STIR_DB_SYM = {"SOFR": "SR3", "SONIA": "SO3", "ER": "I"}
@@ -109,7 +112,8 @@ def underlying_key(sym: str) -> str:
 
 # IB-symbol / Eurex underlying spellings → the contract root style the book's
 # own futures rows use, so option deltas land on the SAME split row
-_CANON_ROOT = {"SOFR3": "SR3", "SONIA3": "SO3", "EUU": "EUR", "EUUU": "EUR"}
+_CANON_ROOT = {"SOFR3": "SR3", "SONIA3": "SO3", "EUU": "EUR", "EUUU": "EUR",
+               "JPU": "JPY", "GBU": "GBP"}
 _CODE_MONTH = {v: k for k, v in _MONTH_CODE.items()}
 
 
