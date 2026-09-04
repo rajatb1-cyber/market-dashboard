@@ -126,13 +126,42 @@ def compute(book, fx, sel_fut, sel_fx, products, ivols, proxies,
         s_av = [p for p in shocked if p in avail]
         u_av = [p for p in unshocked if p in avail]
         if obs >= max(20, wn // 3) and s_av and u_av:
-            C = sub.cov()
-            Cxx = C.loc[s_av, s_av].values
-            Cyx = C.loc[u_av, s_av].values
+            # Σ = D·R·D — correlations from the window's HISTORY, vols from
+            # Rajat's ⚙ implied-vol params where one maps to the factor
+            # (2026-09-04: "JPY move does not make sense given I have a higher
+            # implied vol of USDJPY than EURUSD" — pure-historical cov ignored
+            # his params). Historical std only where no param vol maps.
+            Rm = sub.corr()
+            vsrc = {}
+
+            def _fac_vol(p):
+                """Daily vol in return-space units (frac for %-factors, pp for
+                rates). Param ivol: currency/factor key direct, else the mean
+                of mapped instruments' ivols; %ann (or bp ann) → daily /√256."""
+                iv = ivols.get(p)
+                if not iv:
+                    c = [float(ivols[i]) for i, px in (proxies or {}).items()
+                         if px == p and ivols.get(i)]
+                    iv = sum(c) / len(c) if c else None
+                if iv:
+                    vsrc[p] = "param"
+                    return float(iv) / 100.0 / 16.0     # √256 = 16
+                vsrc[p] = "hist"
+                return float(sub[p].std())
+
+            sig = {p: _fac_vol(p) for p in s_av + u_av}
+            Dx = np.array([sig[p] for p in s_av])
+            Dy = np.array([sig[p] for p in u_av])
+            Cxx = Rm.loc[s_av, s_av].values * np.outer(Dx, Dx)
+            Cyx = Rm.loc[u_av, s_av].values * np.outer(Dy, Dx)
             xv = np.array([shocked[p] for p in s_av])
             yv = Cyx @ np.linalg.pinv(Cxx) @ xv
             for p, y in zip(u_av, yv):
                 x_all[p] = float(y)
+            _hf = sorted(p for p, s in vsrc.items() if s == "hist")
+            if _hf:
+                notes.append("no ⚙ param vol maps to "
+                             + ", ".join(_hf) + " — historical vol used there")
             for p in unshocked:
                 if p not in u_av:
                     notes.append(f"{p}: no proxy history — held flat")
