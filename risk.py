@@ -1042,6 +1042,21 @@ def _options_box_html(opt_rows: list) -> str:
             return f"<td style='{style};color:#64748B'>—</td>"
         return f"<td style='{style};color:{_pnl_color(v)}'>{'+' if v >= 0 else '−'}${abs(v):,.0f}</td>"
 
+    # Expiry cell: indigo urgency ramp (Rajat 2026-09-05) — darker = closer,
+    # fading to pale lavender at the book's furthest expiry
+    _dtes = [r[6] for r in opt_rows if r[6] is not None]
+    _dmax = max(max(_dtes), 1) if _dtes else 1
+
+    def _exp_cell(expy, dte):
+        if dte is None:
+            return f"<td style='{td};color:#64748B'>{expy}</td>"
+        t = min(max(dte, 0) / _dmax, 1.0)
+        c0, c1 = (76, 63, 191), (236, 234, 249)     # #4C3FBF → #ECEAF9
+        rgb = tuple(round(a + (b - a) * t) for a, b in zip(c0, c1))
+        fg = "#FFFFFF" if t < 0.45 else "#3A3468"
+        return (f"<td style='{td};background:rgb{rgb};color:{fg};"
+                f"font-weight:600'>{expy}</td>")
+
     body = ""
     tot_prem, tot_pst = 0.0, 0.0
     for name, und, strike, expy, lvl, prem, dte, pst in opt_rows:
@@ -1054,7 +1069,7 @@ def _options_box_html(opt_rows: list) -> str:
         body += (f"<tr><td style='{td_l}'><b>{name}</b></td>"
                  f"<td style='{td_l};color:#94A3B8'>{und or '—'}</td>"
                  f"<td style='{td}'>{strike_txt}</td>"
-                 f"<td style='{td}'>{expy}</td>"
+                 f"{_exp_cell(expy, dte)}"
                  f"<td style='{lvl_col}'>{lvl_txt}</td>"
                  f"{_sd(prem)}<td style='{td}'>{dte_txt}</td>{_sd(pst)}</tr>")
 
