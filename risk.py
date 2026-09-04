@@ -194,14 +194,20 @@ def _guess_proxy(product, name, underlying=""):
         if any(k in b for k in ("NG", "NATGAS", "GAS")):
             return "NatGas"
         return "Gold"
-    # FX: futures/option roots → the CURRENCY proxy (an FX cash row's name is
-    # already the currency and falls through the map unchanged)
-    _FX_ROOT = {"EUU": "EUR", "6E": "EUR", "M6E": "EUR",
-                "JPU": "JPY", "6J": "JPY", "GBU": "GBP", "6B": "GBP",
-                "M6B": "GBP", "6A": "AUD", "M6A": "AUD", "6C": "CAD",
-                "6S": "CHF"}
-    r = _root_of(underlying or name)
-    return _FX_ROOT.get(r, name)
+    # FX: futures/option roots → the CURRENCY proxy. Checks underlying AND the
+    # symbol (delivered "6EU6" futures carry Underlying "EUR", whose root
+    # missed the old map and returned the raw symbol — Rajat 2026-09-05).
+    _FX_ROOT = {"EUU": "EUR", "6E": "EUR", "M6E": "EUR", "EUR": "EUR",
+                "JPU": "JPY", "6J": "JPY", "JPY": "JPY",
+                "GBU": "GBP", "6B": "GBP", "M6B": "GBP", "GBP": "GBP",
+                "6A": "AUD", "M6A": "AUD", "AUD": "AUD",
+                "6C": "CAD", "CAD": "CAD", "6S": "CHF", "CHF": "CHF",
+                "CNH": "CNH"}
+    for cand in (underlying, name):
+        r = _root_of(cand)
+        if r in _FX_ROOT:
+            return _FX_ROOT[r]
+    return name
 
 
 _CLASS_RANK = {"Rates": 0, "FX": 1, "Equities": 2, "Commod": 3}
