@@ -20,12 +20,30 @@ from __future__ import annotations
 _BUILD = "2026-09-04.1"
 
 import math
+import time
 
 import numpy as np
 import pandas as pd
 
 import risk_div
 import risk_options
+
+# proxy-returns memo so a 4-scenario batch fetches history ONCE (yf+FRED)
+_RET_MEMO: dict = {}
+_RET_TTL_S = 600
+
+
+def _fetch_returns(fnames: list, fred_key) -> dict:
+    key = (tuple(sorted(fnames)), bool(fred_key))
+    now = time.time()
+    ent = _RET_MEMO.get(key)
+    if ent and now - ent[0] < _RET_TTL_S:
+        return ent[1]
+    start = (pd.Timestamp.today() - pd.Timedelta(days=900)).date().isoformat()
+    risk_div._prime_proxy_batch(fnames, start)
+    rets = {p: risk_div._proxy_returns(p, start, fred_key) for p in fnames}
+    _RET_MEMO[key] = (now, rets)
+    return rets
 
 
 def _is_rate_factor(proxy: str) -> bool:
@@ -98,9 +116,7 @@ def compute(book, fx, sel_fut, sel_fx, products, ivols, proxies,
     obs = 0
     unshocked = [p for p in fnames if p not in shocked]
     if propagate and shocked and unshocked:
-        start = (pd.Timestamp.today() - pd.Timedelta(days=900)).date().isoformat()
-        risk_div._prime_proxy_batch(fnames, start)
-        rets = {p: risk_div._proxy_returns(p, start, fred_key) for p in fnames}
+        rets = _fetch_returns(fnames, fred_key)
         avail = [p for p in fnames if len(rets[p]) >= 60]
         R_df = (pd.DataFrame({p: rets[p] for p in avail}).dropna(how="any")
                 if avail else pd.DataFrame())

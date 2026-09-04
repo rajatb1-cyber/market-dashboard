@@ -1335,49 +1335,79 @@ def _win_var_html(res: dict) -> str:
             f"<thead>{wh}</thead><tbody>{wb}</tbody></table></div>")
 
 
-def _scn_html(sr: dict) -> str:
-    """Scenario P&L report (risk_scenario): factor-move strip + per-position
-    P&L, worst first, sign-coloured, total footer."""
+def _scn_multi_html(results: list) -> str:
+    """Scenario P&L report (risk_scenario): results = [(label, res), …].
+    Two tables — factor moves (rows = factors, cols = scenarios; inputs bold,
+    implied grey) and per-position P&L (rows = positions, cols = scenarios,
+    sign-coloured, total footer)."""
     th, th_l, td, td_l, tf, tf_l = _VTH, _VTHL, _VTD, _VTDL, _VTF, _VTFL
-    fh = (f"<tr><th style='{th_l}'>Factor</th><th style='{th}'>move</th>"
-          f"<th style='{th}'>source</th></tr>")
+    labels = [lbl for lbl, _ in results]
+    # union of factors, order = first appearance
+    fmeta: dict = {}
+    for _, sr in results:
+        for p, is_rate, _sh, _mv in sr["factors"]:
+            fmeta.setdefault(p, is_rate)
+    fmap = [{p: (mv, sh) for p, _ir, sh, mv in sr["factors"]}
+            for _, sr in results]
+    fh = (f"<tr><th style='{th_l}'>Factor</th>"
+          + "".join(f"<th style='{th}'>{l}</th>" for l in labels) + "</tr>")
     fb = ""
-    for p, is_rate, was_shocked, mv in sr["factors"]:
+    for p, is_rate in fmeta.items():
         unit = "bp" if is_rate else "%"
-        src = "input" if was_shocked else ("implied" if sr["propagate"] else "flat")
-        wt = "font-weight:700" if was_shocked else "color:#64748B"
-        fb += (f"<tr><td style='{td_l}'><b>{p}</b></td>"
-               f"<td style='{td};{wt}'>{mv:+.2f}{unit}</td>"
-               f"<td style='{td};color:#64748B'>{src}</td></tr>")
+        cells = ""
+        for fm in fmap:
+            if p not in fm:
+                cells += f"<td style='{td};color:#64748B'>—</td>"
+                continue
+            mv, sh = fm[p]
+            sty = "font-weight:700" if sh else "color:#64748B"
+            cells += f"<td style='{td};{sty}'>{mv:+.2f}{unit}</td>"
+        fb += f"<tr><td style='{td_l}'><b>{p}</b></td>{cells}</tr>"
+    # union of positions, order = first result (same book for all runs)
+    pmeta: dict = {}
+    for _, sr in results:
+        for name, kind, proxy, _mv, _ir, _pnl in sr["rows"]:
+            pmeta.setdefault(name, (kind, proxy))
+    pmap = [{name: pnl for name, _k, _x, _mv, _ir, pnl in sr["rows"]}
+            for _, sr in results]
     ph = (f"<tr><th style='{th_l}'>Position</th><th style='{th}'>kind</th>"
-          f"<th style='{th}'>factor</th><th style='{th}'>P&L</th></tr>")
+          f"<th style='{th}'>factor</th>"
+          + "".join(f"<th style='{th}'>{l}</th>" for l in labels) + "</tr>")
     pb = ""
-    for name, kind, proxy, mv, is_rate, pnl in sorted(sr["rows"],
-                                                      key=lambda r: r[5]):
-        unit = "bp" if is_rate else "%"
+    for name, (kind, proxy) in pmeta.items():
+        cells = ""
+        for pm in pmap:
+            if name not in pm:
+                cells += f"<td style='{td};color:#64748B'>—</td>"
+                continue
+            pnl = pm[name]
+            cells += (f"<td style='{td};color:{_pnl_color(1 if pnl >= 0 else -1)};"
+                      f"font-weight:600'>${pnl:+,.0f}</td>")
         pb += (f"<tr><td style='{td_l}'>{name}</td>"
                f"<td style='{td};color:#64748B'>{kind}</td>"
-               f"<td style='{td}'>{proxy} {mv:+.2f}{unit}</td>"
-               f"<td style='{td};color:{_pnl_color(1 if pnl >= 0 else -1)};"
-               f"font-weight:600'>${pnl:+,.0f}</td></tr>")
-    tot = sr["total"]
+               f"<td style='{td};color:#64748B'>{proxy}</td>{cells}</tr>")
+    tcells = ""
+    for _, sr in results:
+        tot = sr["total"]
+        tcells += (f"<td style='{tf};color:{_pnl_color(1 if tot >= 0 else -1)};"
+                   f"font-weight:700'>${tot:+,.0f}</td>")
     pb += (f"<tr><td style='{tf_l}'><b>Total</b></td><td style='{tf}'></td>"
-           f"<td style='{tf}'></td>"
-           f"<td style='{tf};color:{_pnl_color(1 if tot >= 0 else -1)};"
-           f"font-weight:700'>${tot:+,.0f}</td></tr>")
-    cap = (f"corr window {sr['window']} ({sr['obs']} obs)"
-           if sr["propagate"] else "no propagation — unshocked factors flat")
+           f"<td style='{tf}'></td>{tcells}</tr>")
+    sr0 = results[0][1]
+    cap = (f"corr window {sr0['window']} ({sr0['obs']} obs) — bold = your "
+           "input, grey = correlation-implied"
+           if sr0["propagate"] else "no propagation — unshocked factors flat")
     return (
-        "<div style='display:flex;gap:18px;flex-wrap:wrap;align-items:flex-start'>"
-        f"<div style='overflow-x:auto;flex:0 0 280px'><b style='font-size:12px'>"
-        f"Factor moves</b> <span style='font-size:10px;color:#64748B'>({cap})"
-        f"</span><table style='border-collapse:collapse;width:100%;"
+        f"<div style='overflow-x:auto;margin-bottom:14px'>"
+        f"<b style='font-size:12px'>Factor moves</b> "
+        f"<span style='font-size:10px;color:#64748B'>({cap})</span>"
+        f"<table style='border-collapse:collapse;width:100%;"
         f"font-family:monospace'><thead>{fh}</thead><tbody>{fb}</tbody>"
         f"</table></div>"
-        f"<div style='overflow-x:auto;flex:1 1 380px'><b style='font-size:12px'>"
+        f"<div style='overflow-x:auto'><b style='font-size:12px'>"
         f"Scenario P&L</b>"
         f"<table style='border-collapse:collapse;width:100%;font-family:monospace'>"
-        f"<thead>{ph}</thead><tbody>{pb}</tbody></table></div></div>")
+        f"<thead>{ph}</thead><tbody>{pb}</tbody></table></div>")
 
 
 def _ac_var_html(res: dict, wname: str) -> str:
@@ -1939,41 +1969,73 @@ def render_scenario():
         "IV sticky, so vol moves are NOT captured.")
     _scf = risk_scenario.factor_universe(
         book, fx, set(eff_fut), set(eff_fx), eff_products, eff_proxies)
-    if not _scf:
-        st.warning("No factors — pull positions and 💾 Save selection in the "
-                   "Risk / VaR tab first.")
+    if not _scf and book.empty and fx.empty:
+        st.warning("No positions — pull the book in the Risk / VaR tab first.")
     else:
-        _shk = {}
-        _sccols = st.columns(4)
-        for _i, (_p, _ir) in enumerate(_scf):
-            _shk[_p] = _sccols[_i % 4].number_input(
-                f"{_p} ({'bp' if _ir else '%'})", value=0.0,
-                step=1.0 if _ir else 0.25, format="%.2f",
-                key=f"_rsc_shk_{_p}")
+        # Factor picker (Rajat 2026-09-04: "let me set the factors and you
+        # back out the others using correl") — default his anchor five; any
+        # proxy is shockable even with no position mapped to it (US10y).
+        _bookf = [p for p, _ in _scf]
+        _allf = list(dict.fromkeys(
+            _bookf + list(risk_div._RATE_FETCH) + list(risk_div._YF)
+            + list(risk_div._YF_INV)))
+        _DEF = [p for p in ("US2y", "US10y", "EUR2y", "EUR", "SPX")
+                if p in _allf]
+        _facs = st.multiselect(
+            "factors to set — everything else is backed out via correlations",
+            _allf, default=_DEF, key="_rsc_facs")
+        # grid: rows = factors, columns = Scenario 1-4
+        _NS = 4
+        _hd = st.columns([1.1] + [1.0] * _NS)
+        _hd[0].markdown("**Factor**")
+        for _j in range(_NS):
+            _hd[_j + 1].markdown(f"**Scenario {_j + 1}**")
+        for _p in _facs:
+            _ir = risk_scenario._is_rate_factor(_p)
+            _cc = st.columns([1.1] + [1.0] * _NS)
+            _cc[0].markdown(f"`{_p}` ({'bp' if _ir else '%'})")
+            for _j in range(_NS):
+                _cc[_j + 1].number_input(
+                    f"{_p} scenario {_j + 1}", value=0.0,
+                    step=1.0 if _ir else 0.25, format="%.2f",
+                    key=f"_rsc_g_{_p}_{_j}", label_visibility="collapsed")
         _sc1, _sc2, _sc3 = st.columns([1.4, 1.0, 1.2])
         _prop = _sc1.checkbox("propagate via correlations", value=True,
                               key="_rsc_prop")
         _swin = _sc2.selectbox("corr window", list(risk_div.WINDOWS),
                                index=2, key="_rsc_win")
         _sc3.markdown("<div style='height:12px'></div>", unsafe_allow_html=True)
-        if _sc3.button("🎯 Run scenario", key="_rsc_run"):
-            if not any(_shk.values()):
-                st.warning("Set at least one nonzero shock.")
+        if _sc3.button("🎯 Run scenarios", key="_rsc_run"):
+            _scns = []
+            for _j in range(_NS):
+                _shk = {p: st.session_state.get(f"_rsc_g_{p}_{_j}", 0.0)
+                        for p in _facs}
+                _shk = {p: v for p, v in _shk.items() if v}
+                if _shk:
+                    _scns.append((f"Scenario {_j + 1}", _shk))
+            if not _scns:
+                st.warning("Set at least one nonzero shock in some column.")
             else:
                 try:
                     _fred_s = st.secrets.get("FRED_KEY")
                 except Exception:
                     _fred_s = None
-                with st.spinner("Propagating shocks & repricing options…"):
-                    st.session_state["_risk_scn_res"] = risk_scenario.compute(
-                        book, fx, set(eff_fut), set(eff_fx), eff_products,
-                        eff_ivols, eff_proxies, _shk, _fred_s,
-                        propagate=_prop, window=_swin)
-        _srs = st.session_state.get("_risk_scn_res")
+                _out = []
+                with st.spinner(f"Running {len(_scns)} scenario(s) — "
+                                "propagating shocks & repricing options…"):
+                    for _lbl, _shk in _scns:
+                        _out.append((_lbl, risk_scenario.compute(
+                            book, fx, set(eff_fut), set(eff_fx), eff_products,
+                            eff_ivols, eff_proxies, _shk, _fred_s,
+                            propagate=_prop, window=_swin)))
+                st.session_state["_risk_scn_multi"] = _out
+        _srs = st.session_state.get("_risk_scn_multi")
         if _srs:
-            st.markdown(_scn_html(_srs), unsafe_allow_html=True)
-            if _srs["notes"]:
-                st.caption("Notes: " + " · ".join(_srs["notes"]))
+            st.markdown(_scn_multi_html(_srs), unsafe_allow_html=True)
+            _nts = list(dict.fromkeys(
+                n for _, _r in _srs for n in _r["notes"]))
+            if _nts:
+                st.caption("Notes: " + " · ".join(_nts))
 
 
 def render_risk():
