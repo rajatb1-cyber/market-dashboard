@@ -150,7 +150,14 @@ def _proxy_options(product, name, ccy=None):
         return _PROXY_EQUITY
     if product == "Commod":
         return _PROXY_COMMOD
-    return [ccy or name]   # FX → the pair itself
+    # FX: cash rows pass ccy (their own pair); futures/option rows (6EU6 —
+    # Rajat 2026-09-05) resolve their currency via the root map. Resolved
+    # currency first, the rest selectable as overrides.
+    _all = ["EUR", "GBP", "JPY", "AUD", "CAD", "CHF", "CNH", "NZD"]
+    _c = ccy or _guess_proxy("FX", name, name)
+    if _c in _all:
+        return [_c] + [x for x in _all if x != _c]
+    return [_c]
 
 
 def _guess_proxy(product, name, underlying=""):
