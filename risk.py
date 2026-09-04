@@ -1335,6 +1335,51 @@ def _win_var_html(res: dict) -> str:
             f"<thead>{wh}</thead><tbody>{wb}</tbody></table></div>")
 
 
+def _scn_html(sr: dict) -> str:
+    """Scenario P&L report (risk_scenario): factor-move strip + per-position
+    P&L, worst first, sign-coloured, total footer."""
+    th, th_l, td, td_l, tf, tf_l = _VTH, _VTHL, _VTD, _VTDL, _VTF, _VTFL
+    fh = (f"<tr><th style='{th_l}'>Factor</th><th style='{th}'>move</th>"
+          f"<th style='{th}'>source</th></tr>")
+    fb = ""
+    for p, is_rate, was_shocked, mv in sr["factors"]:
+        unit = "bp" if is_rate else "%"
+        src = "input" if was_shocked else ("implied" if sr["propagate"] else "flat")
+        wt = "font-weight:700" if was_shocked else "color:#64748B"
+        fb += (f"<tr><td style='{td_l}'><b>{p}</b></td>"
+               f"<td style='{td};{wt}'>{mv:+.2f}{unit}</td>"
+               f"<td style='{td};color:#64748B'>{src}</td></tr>")
+    ph = (f"<tr><th style='{th_l}'>Position</th><th style='{th}'>kind</th>"
+          f"<th style='{th}'>factor</th><th style='{th}'>P&L</th></tr>")
+    pb = ""
+    for name, kind, proxy, mv, is_rate, pnl in sorted(sr["rows"],
+                                                      key=lambda r: r[5]):
+        unit = "bp" if is_rate else "%"
+        pb += (f"<tr><td style='{td_l}'>{name}</td>"
+               f"<td style='{td};color:#64748B'>{kind}</td>"
+               f"<td style='{td}'>{proxy} {mv:+.2f}{unit}</td>"
+               f"<td style='{td};color:{_pnl_color(1 if pnl >= 0 else -1)};"
+               f"font-weight:600'>${pnl:+,.0f}</td></tr>")
+    tot = sr["total"]
+    pb += (f"<tr><td style='{tf_l}'><b>Total</b></td><td style='{tf}'></td>"
+           f"<td style='{tf}'></td>"
+           f"<td style='{tf};color:{_pnl_color(1 if tot >= 0 else -1)};"
+           f"font-weight:700'>${tot:+,.0f}</td></tr>")
+    cap = (f"corr window {sr['window']} ({sr['obs']} obs)"
+           if sr["propagate"] else "no propagation — unshocked factors flat")
+    return (
+        "<div style='display:flex;gap:18px;flex-wrap:wrap;align-items:flex-start'>"
+        f"<div style='overflow-x:auto;flex:0 0 280px'><b style='font-size:12px'>"
+        f"Factor moves</b> <span style='font-size:10px;color:#64748B'>({cap})"
+        f"</span><table style='border-collapse:collapse;width:100%;"
+        f"font-family:monospace'><thead>{fh}</thead><tbody>{fb}</tbody>"
+        f"</table></div>"
+        f"<div style='overflow-x:auto;flex:1 1 380px'><b style='font-size:12px'>"
+        f"Scenario P&L</b>"
+        f"<table style='border-collapse:collapse;width:100%;font-family:monospace'>"
+        f"<thead>{ph}</thead><tbody>{pb}</tbody></table></div></div>")
+
+
 def _ac_var_html(res: dict, wname: str) -> str:
     """VaR by asset class for one correlation window — Component (Euler) VaR + % of book risk,
     plus each class's standalone diversified VaR, undiversified sum and net signed."""
@@ -2632,6 +2677,61 @@ def render_risk():
         st.caption(_note)
     elif _vres:
         st.warning("Could not compute — check the saved selection has positions and implied vols.")
+    st.divider()
+
+    # ── Scenario P&L (Rajat 2026-09-04, NFP day): shock a few anchor factors,
+    # propagate to the rest via the VaR correlation framework, full-reval the
+    # options off the settlement surfaces — engine in risk_scenario.py ────────
+    with st.expander("🎯  Scenario P&L — shock the book", expanded=False):
+        import risk_scenario
+        st.caption(
+            "Enter shocks only for the factors you have a view on — equities/"
+            "FX/commod in **%** (+ = up; FX is USD-per-unit, so JPY +1% = yen "
+            "STRONGER), rates in **bp of yield** (+ = yields up). Unshocked "
+            "factors take their correlation-implied conditional move over the "
+            "chosen window (untick to hold them flat). Futures/FX map linearly "
+            "(same conventions as the VaR); options are FULLY REPRICED off the "
+            "settlement surfaces at the shifted underlying — IV sticky, so vol "
+            "moves are NOT captured.")
+        _scf = risk_scenario.factor_universe(
+            book, fx, set(eff_fut), set(eff_fx), eff_products, eff_proxies)
+        if not _scf:
+            st.caption("No factors — tick positions and 💾 Save selection first.")
+        else:
+            _shk = {}
+            _sccols = st.columns(4)
+            for _i, (_p, _ir) in enumerate(_scf):
+                _shk[_p] = _sccols[_i % 4].number_input(
+                    f"{_p} ({'bp' if _ir else '%'})", value=0.0,
+                    step=1.0 if _ir else 0.25, format="%.2f",
+                    key=f"_rsc_shk_{_p}")
+            _sc1, _sc2, _sc3 = st.columns([1.4, 1.0, 1.2])
+            _prop = _sc1.checkbox("propagate via correlations", value=True,
+                                  key="_rsc_prop")
+            _swin = _sc2.selectbox("corr window", list(risk_div.WINDOWS),
+                                   index=2, key="_rsc_win")
+            _sc3.markdown("<div style='height:12px'></div>",
+                          unsafe_allow_html=True)
+            if _sc3.button("🎯 Run scenario", key="_rsc_run"):
+                if not any(_shk.values()):
+                    st.warning("Set at least one nonzero shock.")
+                else:
+                    try:
+                        _fred_s = st.secrets.get("FRED_KEY")
+                    except Exception:
+                        _fred_s = None
+                    with st.spinner("Propagating shocks & repricing options…"):
+                        st.session_state["_risk_scn_res"] = (
+                            risk_scenario.compute(
+                                book, fx, set(eff_fut), set(eff_fx),
+                                eff_products, eff_ivols, eff_proxies, _shk,
+                                _fred_s, propagate=_prop, window=_swin))
+            _srs = st.session_state.get("_risk_scn_res")
+            if _srs:
+                st.markdown(_scn_html(_srs), unsafe_allow_html=True)
+                if _srs["notes"]:
+                    st.caption("Notes: " + " · ".join(_srs["notes"]))
+
     st.divider()
 
     if book.empty:
