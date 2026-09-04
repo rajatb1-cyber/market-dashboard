@@ -2079,7 +2079,12 @@ def render_scenario():
         for _p in _facs:
             _ir = risk_scenario._is_rate_factor(_p)
             _cc = st.columns([1.1] + [1.0] * _NS)
-            _cc[0].markdown(f"`{_p}` ({'bp' if _ir else '%'})")
+            # USD-per-unit convention: for pairs conventionally quoted the
+            # other way (JPY/CHF/CAD/CNH) spell out the direction on the row
+            if _p in risk_div._YF_INV:
+                _cc[0].markdown(f"`{_p}` (%, + = {_p}↑ = USD{_p}↓)")
+            else:
+                _cc[0].markdown(f"`{_p}` ({'bp' if _ir else '%'})")
             for _j in range(_NS):
                 _gk = f"_rsc_g_{_p}_{_j}"
                 _cc[_j + 1].number_input(
