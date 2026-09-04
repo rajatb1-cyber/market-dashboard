@@ -90,6 +90,13 @@ _PRODUCT_BY_ROOT = {
     "PL": "Commod", "PA": "Commod", "CL": "Commod", "MCL": "Commod", "QM": "Commod",
     "BZ": "Commod", "BRN": "Commod", "NG": "Commod", "RB": "Commod", "HO": "Commod",
     "MBT": "Commod", "BTC": "Commod", "ETH": "Commod", "MET": "Commod",
+    # FX futures + FX option roots (option roots ≠ future roots: EUU/JPU/GBU —
+    # 2026-09-04: EUUU6 puts guessed "Rates"/US2y and were skipped)
+    "6E": "FX", "M6E": "FX", "EUU": "FX", "EUR": "FX",
+    "6J": "FX", "JPU": "FX", "JPY": "FX",
+    "6B": "FX", "M6B": "FX", "GBU": "FX", "GBP": "FX",
+    "6A": "FX", "M6A": "FX", "AUD": "FX",
+    "6C": "FX", "CAD": "FX", "6S": "FX", "CHF": "FX",
 }
 _RATES_KW = ("SOFR", "SONIA", "ESTR", "EURIBOR", "STIR", "TREASUR", "T-NOTE", "T-BOND",
              "GILT", "BUND", "BOBL", "SCHATZ", "JGB", "FED FUND")
@@ -187,7 +194,14 @@ def _guess_proxy(product, name, underlying=""):
         if any(k in b for k in ("NG", "NATGAS", "GAS")):
             return "NatGas"
         return "Gold"
-    return name            # FX
+    # FX: futures/option roots → the CURRENCY proxy (an FX cash row's name is
+    # already the currency and falls through the map unchanged)
+    _FX_ROOT = {"EUU": "EUR", "6E": "EUR", "M6E": "EUR",
+                "JPU": "JPY", "6J": "JPY", "GBU": "GBP", "6B": "GBP",
+                "M6B": "GBP", "6A": "AUD", "M6A": "AUD", "6C": "CAD",
+                "6S": "CHF"}
+    r = _root_of(underlying or name)
+    return _FX_ROOT.get(r, name)
 
 
 def _load_risk_selection():

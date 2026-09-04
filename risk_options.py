@@ -169,7 +169,10 @@ def option_book(book: pd.DataFrame, sel: set | None = None):
         except Exception:
             notes.append(f"{sym}: bad expiry “{r.get('Expiry')}” — skipped")
             continue
-        if expiry <= date.today():
+        # strictly-past only: an option expiring TODAY still has today's move
+        # in it (Rajat 2026-09-04: EUU put spread expiring NFP day was
+        # silently dropped from the scenario tool) — it prices with tiny T
+        if expiry < date.today():
             notes.append(f"{sym}: expired {expiry} — skipped")
             continue
         src, mkt = pair
