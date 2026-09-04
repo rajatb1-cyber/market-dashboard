@@ -1969,7 +1969,14 @@ def render_risk():
         pf = st.session_state.get("_risk_pending_fut", eff_fut)
         px = st.session_state.get("_risk_pending_fx", eff_fx)
         pp = dict(eff_products); pi = dict(eff_ivols); pr = dict(eff_proxies)
-        for name in set(pf) | set(px):
+        # Option positions collapse to UNDERLYING rows in the editor (ES/GBL/
+        # SOFR3…) whose names are in neither pf nor px, so sweeping only the
+        # selection lost their vols on save — fine same-session (widget state
+        # carried them) but 0 the next morning (Rajat 2026-09-04). Sweep every
+        # rendered editor row via its widget key instead.
+        _edited = {k[len("_riskiv_"):] for k in st.session_state
+                   if isinstance(k, str) and k.startswith("_riskiv_")}
+        for name in set(pf) | set(px) | _edited:
             if f"_riskprod_{name}" in st.session_state:
                 pp[name] = st.session_state[f"_riskprod_{name}"]
             if f"_riskiv_{name}" in st.session_state:
