@@ -23,7 +23,7 @@ from rates_options import render_rates_options
 from vol_dashboard import render_vol_dashboard
 from cta import render_cta
 from pnl import render_pnl
-from risk import render_risk
+from risk import render_risk, render_scenario
 from ltr import render_ltr
 from news import render_news
 
@@ -775,14 +775,17 @@ def main():
             render_commodities()
 
     with tab_rp:
-        sub_pnl, sub_risk, sub_ltr = st.tabs(
-            ["💰 P&L Analytics", "⚠️ Risk / VaR", "💼 LT Holdings"])
+        sub_pnl, sub_risk, sub_scn, sub_ltr = st.tabs(
+            ["💰 P&L Analytics", "⚠️ Risk / VaR", "🎯 Scenario", "💼 LT Holdings"])
         with sub_pnl:
             if _tab_loaded("pnl", "P&L Analytics"):
                 render_pnl()
         with sub_risk:
             if _tab_loaded("risk", "Risk / VaR"):
                 render_risk()
+        with sub_scn:
+            if _tab_loaded("risk_scn", "Scenario"):
+                render_scenario()
         with sub_ltr:
             if _tab_loaded("ltr", "LT Holdings"):
                 render_ltr()

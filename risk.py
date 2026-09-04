@@ -1880,6 +1880,102 @@ def _intraday_box_html(decomp: dict) -> str:
 
 
 @st.fragment
+def _scenario_inputs():
+    """(book, fx, eff_fut, eff_fx, products, ivols, proxies, src_txt) — the
+    same positions source + saved-selection resolution render_risk uses, minus
+    the refresh buttons (the Risk / VaR tab owns pulling; this is read-only).
+    Option rows' position_value_base is left as-is: the scenario engine
+    reprices options off the surfaces and never reads their premium."""
+    raw_pos = load_positions()
+    _live_book = st.session_state.get("_risk_live_book")
+    if _live_book is None:                  # restore persisted LIVE snapshot
+        _lb, _lfb, _lts = rp.load_live_snapshot()
+        if _lb is not None and not _lb.empty:
+            _live_book = _lb
+            st.session_state["_risk_live_book"] = _lb
+            st.session_state["_risk_live_fxbal"] = _lfb
+            st.session_state["_risk_live_ts"] = _lts
+    _is_live = (_live_book is not None and hasattr(_live_book, "empty")
+                and not _live_book.empty)
+    if _is_live:
+        book = _live_book
+        _lfb = st.session_state.get("_risk_live_fxbal") or None
+        fx = build_fx_book(balances=_lfb) if _lfb else build_fx_book()
+        src = "📡 LIVE snapshot"
+    else:
+        book = build_speculative_book(raw_pos)
+        fx = build_fx_book()
+        src = "Flex EOD"
+    (saved_fut, saved_fx, products, ivols, proxies,
+     saved_exists) = _load_risk_selection()
+    if saved_exists:
+        eff_fut, eff_fx = set(saved_fut), set(saved_fx)
+    else:
+        eff_fut = set(book["Symbol"]) if not book.empty else set()
+        eff_fx = set(fx["Currency"]) if not fx.empty else set()
+    if _is_live and not book.empty:
+        eff_fut = set(book["Symbol"])       # live book: show ALL live positions
+    return (book, fx, eff_fut, eff_fx, dict(products), dict(ivols),
+            dict(proxies), src)
+
+
+def render_scenario():
+    """🎯 Scenario sub-tab (Rajat 2026-09-04, NFP day): shock a few anchor
+    factors, propagate to the rest via the VaR correlation framework,
+    full-reval the options — engine in risk_scenario.py."""
+    import risk_scenario
+    st.markdown("#### Scenario P&L — shock the book")
+    (book, fx, eff_fut, eff_fx, eff_products, eff_ivols, eff_proxies,
+     _src) = _scenario_inputs()
+    st.caption(
+        f"Positions: **{_src}** · products/vols/proxies from the Risk / VaR "
+        "tab's saved params. Enter shocks only for the factors you have a "
+        "view on — equities/FX/commod in **%** (+ = up; FX is USD-per-unit, "
+        "so JPY +1% = yen STRONGER), rates in **bp of yield** (+ = yields "
+        "up). Unshocked factors take their correlation-implied conditional "
+        "move over the chosen window (untick to hold them flat). Futures/FX "
+        "map linearly (same conventions as the VaR); options are FULLY "
+        "REPRICED off the settlement surfaces at the shifted underlying — "
+        "IV sticky, so vol moves are NOT captured.")
+    _scf = risk_scenario.factor_universe(
+        book, fx, set(eff_fut), set(eff_fx), eff_products, eff_proxies)
+    if not _scf:
+        st.warning("No factors — pull positions and 💾 Save selection in the "
+                   "Risk / VaR tab first.")
+    else:
+        _shk = {}
+        _sccols = st.columns(4)
+        for _i, (_p, _ir) in enumerate(_scf):
+            _shk[_p] = _sccols[_i % 4].number_input(
+                f"{_p} ({'bp' if _ir else '%'})", value=0.0,
+                step=1.0 if _ir else 0.25, format="%.2f",
+                key=f"_rsc_shk_{_p}")
+        _sc1, _sc2, _sc3 = st.columns([1.4, 1.0, 1.2])
+        _prop = _sc1.checkbox("propagate via correlations", value=True,
+                              key="_rsc_prop")
+        _swin = _sc2.selectbox("corr window", list(risk_div.WINDOWS),
+                               index=2, key="_rsc_win")
+        _sc3.markdown("<div style='height:12px'></div>", unsafe_allow_html=True)
+        if _sc3.button("🎯 Run scenario", key="_rsc_run"):
+            if not any(_shk.values()):
+                st.warning("Set at least one nonzero shock.")
+            else:
+                try:
+                    _fred_s = st.secrets.get("FRED_KEY")
+                except Exception:
+                    _fred_s = None
+                with st.spinner("Propagating shocks & repricing options…"):
+                    st.session_state["_risk_scn_res"] = risk_scenario.compute(
+                        book, fx, set(eff_fut), set(eff_fx), eff_products,
+                        eff_ivols, eff_proxies, _shk, _fred_s,
+                        propagate=_prop, window=_swin)
+        _srs = st.session_state.get("_risk_scn_res")
+        if _srs:
+            st.markdown(_scn_html(_srs), unsafe_allow_html=True)
+            if _srs["notes"]:
+                st.caption("Notes: " + " · ".join(_srs["notes"]))
+
+
 def render_risk():
     st.markdown("#### Speculative Book — Risk & PnL")
     st.caption("IBKR positions **excluding ETFs**. Base currency USD. VaR is 1-day, 95% & 99%.")
@@ -2677,61 +2773,6 @@ def render_risk():
         st.caption(_note)
     elif _vres:
         st.warning("Could not compute — check the saved selection has positions and implied vols.")
-    st.divider()
-
-    # ── Scenario P&L (Rajat 2026-09-04, NFP day): shock a few anchor factors,
-    # propagate to the rest via the VaR correlation framework, full-reval the
-    # options off the settlement surfaces — engine in risk_scenario.py ────────
-    with st.expander("🎯  Scenario P&L — shock the book", expanded=False):
-        import risk_scenario
-        st.caption(
-            "Enter shocks only for the factors you have a view on — equities/"
-            "FX/commod in **%** (+ = up; FX is USD-per-unit, so JPY +1% = yen "
-            "STRONGER), rates in **bp of yield** (+ = yields up). Unshocked "
-            "factors take their correlation-implied conditional move over the "
-            "chosen window (untick to hold them flat). Futures/FX map linearly "
-            "(same conventions as the VaR); options are FULLY REPRICED off the "
-            "settlement surfaces at the shifted underlying — IV sticky, so vol "
-            "moves are NOT captured.")
-        _scf = risk_scenario.factor_universe(
-            book, fx, set(eff_fut), set(eff_fx), eff_products, eff_proxies)
-        if not _scf:
-            st.caption("No factors — tick positions and 💾 Save selection first.")
-        else:
-            _shk = {}
-            _sccols = st.columns(4)
-            for _i, (_p, _ir) in enumerate(_scf):
-                _shk[_p] = _sccols[_i % 4].number_input(
-                    f"{_p} ({'bp' if _ir else '%'})", value=0.0,
-                    step=1.0 if _ir else 0.25, format="%.2f",
-                    key=f"_rsc_shk_{_p}")
-            _sc1, _sc2, _sc3 = st.columns([1.4, 1.0, 1.2])
-            _prop = _sc1.checkbox("propagate via correlations", value=True,
-                                  key="_rsc_prop")
-            _swin = _sc2.selectbox("corr window", list(risk_div.WINDOWS),
-                                   index=2, key="_rsc_win")
-            _sc3.markdown("<div style='height:12px'></div>",
-                          unsafe_allow_html=True)
-            if _sc3.button("🎯 Run scenario", key="_rsc_run"):
-                if not any(_shk.values()):
-                    st.warning("Set at least one nonzero shock.")
-                else:
-                    try:
-                        _fred_s = st.secrets.get("FRED_KEY")
-                    except Exception:
-                        _fred_s = None
-                    with st.spinner("Propagating shocks & repricing options…"):
-                        st.session_state["_risk_scn_res"] = (
-                            risk_scenario.compute(
-                                book, fx, set(eff_fut), set(eff_fx),
-                                eff_products, eff_ivols, eff_proxies, _shk,
-                                _fred_s, propagate=_prop, window=_swin))
-            _srs = st.session_state.get("_risk_scn_res")
-            if _srs:
-                st.markdown(_scn_html(_srs), unsafe_allow_html=True)
-                if _srs["notes"]:
-                    st.caption("Notes: " + " · ".join(_srs["notes"]))
-
     st.divider()
 
     if book.empty:
