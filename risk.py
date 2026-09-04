@@ -2495,7 +2495,16 @@ def render_risk():
     if not book.empty:
         for _, r in book[book["Symbol"].isin(eff_fut)].iterrows():
             sym = r["Symbol"]
-            prod = eff_products.get(sym) or _guess_product(sym, r.get("Underlying", ""))
+            _und = str(r.get("Underlying") or "")
+            if bool(r.get("is_option")):
+                # options: the UNDERLYING carries the product — the ⚙ editor
+                # saves by underlying now, and legacy per-SYMBOL saves misfile
+                # FX options as Rates ("EUUU6 P1157": "Rates" in the old json,
+                # which parked them inside the Rates block — Rajat 2026-09-04)
+                prod = (eff_products.get(_und)
+                        or _guess_product(_und or sym, _und or sym))
+            else:
+                prod = eff_products.get(sym) or _guess_product(sym, _und)
             pvb = float(r["position_value_base"])
             if bool(r.get("is_option")):
                 # Options: rough delta×move PnL off the vol-market surfaces
