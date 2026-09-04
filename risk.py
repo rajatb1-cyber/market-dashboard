@@ -1363,12 +1363,44 @@ def _scn_multi_html(results: list) -> str:
             sty = "font-weight:700" if sh else "color:#64748B"
             cells += f"<td style='{td};{sty}'>{mv:+.2f}{unit}</td>"
         fb += f"<tr><td style='{td_l}'><b>{p}</b></td>{cells}</tr>"
+    # by-asset-class matrix (Rajat 2026-09-04: "breakdown by asset class")
+    cmeta: list = []
+    for _, sr in results:
+        for row in sr["rows"]:
+            if row[6] not in cmeta:
+                cmeta.append(row[6])
+    cmap = []
+    for _, sr in results:
+        agg: dict = {}
+        for row in sr["rows"]:
+            agg[row[6]] = agg.get(row[6], 0.0) + row[5]
+        cmap.append(agg)
+    ch = (f"<tr><th style='{th_l}'>Asset class</th>"
+          + "".join(f"<th style='{th}'>{l}</th>" for l in labels) + "</tr>")
+    cb = ""
+    for cls in cmeta:
+        cells = ""
+        for am in cmap:
+            if cls not in am:
+                cells += f"<td style='{td};color:#64748B'>—</td>"
+                continue
+            pnl = am[cls]
+            cells += (f"<td style='{td};color:{_pnl_color(1 if pnl >= 0 else -1)};"
+                      f"font-weight:600'>${pnl:+,.0f}</td>")
+        cb += f"<tr><td style='{td_l}'><b>{cls}</b></td>{cells}</tr>"
+    ctcells = ""
+    for _, sr in results:
+        tot = sr["total"]
+        ctcells += (f"<td style='{tf};color:{_pnl_color(1 if tot >= 0 else -1)};"
+                    f"font-weight:700'>${tot:+,.0f}</td>")
+    cb += f"<tr><td style='{tf_l}'><b>Total</b></td>{ctcells}</tr>"
+
     # union of positions, order = first result (same book for all runs)
     pmeta: dict = {}
     for _, sr in results:
-        for name, kind, proxy, _mv, _ir, _pnl in sr["rows"]:
+        for name, kind, proxy, _mv, _ir, _pnl, _prod in sr["rows"]:
             pmeta.setdefault(name, (kind, proxy))
-    pmap = [{name: pnl for name, _k, _x, _mv, _ir, pnl in sr["rows"]}
+    pmap = [{name: pnl for name, _k, _x, _mv, _ir, pnl, _pr in sr["rows"]}
             for _, sr in results]
     ph = (f"<tr><th style='{th_l}'>Position</th><th style='{th}'>kind</th>"
           f"<th style='{th}'>factor</th>"
@@ -1404,8 +1436,12 @@ def _scn_multi_html(results: list) -> str:
         f"<table style='border-collapse:collapse;width:100%;"
         f"font-family:monospace'><thead>{fh}</thead><tbody>{fb}</tbody>"
         f"</table></div>"
+        f"<div style='overflow-x:auto;margin-bottom:14px'>"
+        f"<b style='font-size:12px'>P&L by asset class</b>"
+        f"<table style='border-collapse:collapse;width:100%;font-family:monospace'>"
+        f"<thead>{ch}</thead><tbody>{cb}</tbody></table></div>"
         f"<div style='overflow-x:auto'><b style='font-size:12px'>"
-        f"Scenario P&L</b>"
+        f"Scenario P&L — by position</b>"
         f"<table style='border-collapse:collapse;width:100%;font-family:monospace'>"
         f"<thead>{ph}</thead><tbody>{pb}</tbody></table></div>")
 

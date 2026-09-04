@@ -151,11 +151,11 @@ def compute(book, fx, sel_fut, sel_fx, products, ivols, proxies,
     # ── position P&L ─────────────────────────────────────────────────────────
     rows, total = [], 0.0
 
-    def _row(name, kind, proxy, pnl):
+    def _row(name, kind, proxy, pnl, prod):
         nonlocal total
         total += pnl
         rows.append((name, kind, proxy, _to_natural(proxy, x_all.get(proxy, 0.0)),
-                     _is_rate_factor(proxy), pnl))
+                     _is_rate_factor(proxy), pnl, prod))
 
     if book is not None and not book.empty:
         for _, r in book.iterrows():
@@ -168,10 +168,10 @@ def compute(book, fx, sel_fut, sel_fx, products, ivols, proxies,
             if prod == "Rates":
                 usd_bp = (float(r["Quantity"]) * float(r.get("Multiplier") or 0.0)
                           * 0.01 * float(r.get("FXRateToBase") or 1.0))
-                _row(s, "future", proxy, usd_bp * x * 100.0)   # x pp → bp
+                _row(s, "future", proxy, usd_bp * x * 100.0, prod)  # x pp → bp
             else:
                 _row(s, "future", proxy,
-                     float(r.get("position_value_base") or 0.0) * x)
+                     float(r.get("position_value_base") or 0.0) * x, prod)
 
     opts, onotes = risk_options.option_book(book, sel_fut)
     notes += onotes
@@ -205,7 +205,7 @@ def compute(book, fx, sel_fut, sel_fx, products, ivols, proxies,
         v0 = risk_options._reval(o, res, F0)
         v1 = risk_options._reval(o, res, F0 + dF)
         _row(o["sym"], "option", proxy,
-             (v1 - v0) * res["mult"] * o["qty"] * o["fxr"])
+             (v1 - v0) * res["mult"] * o["qty"] * o["fxr"], prod)
 
     if fx is not None and not fx.empty:
         for _, r in fx.iterrows():
@@ -215,7 +215,8 @@ def compute(book, fx, sel_fut, sel_fx, products, ivols, proxies,
             proxy = proxies.get(c, c)
             sign = 1.0 if str(r.get("side", "Long")) == "Long" else -1.0
             _row(c, "fx cash", proxy,
-                 sign * abs(float(r["USD_exposure"])) * x_all.get(proxy, 0.0))
+                 sign * abs(float(r["USD_exposure"])) * x_all.get(proxy, 0.0),
+                 "FX")
 
     return {"factors": frows, "rows": rows, "total": total,
             "notes": notes, "obs": obs, "window": window,
