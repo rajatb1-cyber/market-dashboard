@@ -209,6 +209,23 @@ def _save_risk_selection(futures, fx, products=None, ivols=None, proxies=None):
                    "proxies": proxies or {}}, f, indent=2)
 
 
+# ── Saved scenario sets for the 🎯 Scenario tab (Rajat 2026-09-04) ────────────
+_SCN_SETS_PATH = os.path.join(os.path.dirname(__file__), "risk_scenarios.json")
+
+
+def _load_scn_sets() -> dict:
+    try:
+        with open(_SCN_SETS_PATH) as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def _save_scn_sets(d: dict) -> None:
+    with open(_SCN_SETS_PATH, "w") as f:
+        json.dump(d, f, indent=2)
+
+
 # ── IBKR Flex pull guard (rate-limit / IP-block protection) ──────────────────
 # Flex Web Service is meant for infrequent pulls; rapid repeats → a ~10-min IP
 # penalty box. We persist the last-pull time (and any back-off) to a file so the
@@ -2011,6 +2028,20 @@ def render_scenario():
         # Factor picker (Rajat 2026-09-04: "let me set the factors and you
         # back out the others using correl") — default his anchor five; any
         # proxy is shockable even with no position mapped to it (US10y).
+        # apply a pending Load BEFORE any _rsc widget instantiates (session
+        # state can't be written for a widget already created this run)
+        _pend = st.session_state.pop("_rsc_pending_load", None)
+        if _pend:
+            for _k in [k for k in st.session_state
+                       if isinstance(k, str) and k.startswith("_rsc_g_")]:
+                st.session_state[_k] = 0.0
+            st.session_state["_rsc_facs"] = list(_pend.get("factors", []))
+            for _j, _col in enumerate(_pend.get("shocks", [])[:4]):
+                for _p, _v in _col.items():
+                    st.session_state[f"_rsc_g_{_p}_{_j}"] = float(_v)
+            st.session_state["_rsc_prop"] = bool(_pend.get("propagate", True))
+            if _pend.get("window") in risk_div.WINDOWS:
+                st.session_state["_rsc_win"] = _pend["window"]
         _bookf = [p for p, _ in _scf]
         _allf = list(dict.fromkeys(
             _bookf + list(risk_div._RATE_FETCH) + list(risk_div._YF)
@@ -2019,7 +2050,8 @@ def render_scenario():
                 if p in _allf]
         _facs = st.multiselect(
             "factors to set — everything else is backed out via correlations",
-            _allf, default=_DEF, key="_rsc_facs")
+            _allf, key="_rsc_facs",
+            **({} if "_rsc_facs" in st.session_state else {"default": _DEF}))
         # grid: rows = factors, columns = Scenario 1-4
         _NS = 4
         _hd = st.columns([1.1] + [1.0] * _NS)
@@ -2031,15 +2063,19 @@ def render_scenario():
             _cc = st.columns([1.1] + [1.0] * _NS)
             _cc[0].markdown(f"`{_p}` ({'bp' if _ir else '%'})")
             for _j in range(_NS):
+                _gk = f"_rsc_g_{_p}_{_j}"
                 _cc[_j + 1].number_input(
-                    f"{_p} scenario {_j + 1}", value=0.0,
+                    f"{_p} scenario {_j + 1}",
                     step=1.0 if _ir else 0.25, format="%.2f",
-                    key=f"_rsc_g_{_p}_{_j}", label_visibility="collapsed")
+                    key=_gk, label_visibility="collapsed",
+                    **({} if _gk in st.session_state else {"value": 0.0}))
         _sc1, _sc2, _sc3 = st.columns([1.4, 1.0, 1.2])
-        _prop = _sc1.checkbox("propagate via correlations", value=True,
-                              key="_rsc_prop")
-        _swin = _sc2.selectbox("corr window", list(risk_div.WINDOWS),
-                               index=2, key="_rsc_win")
+        _prop = _sc1.checkbox(
+            "propagate via correlations", key="_rsc_prop",
+            **({} if "_rsc_prop" in st.session_state else {"value": True}))
+        _swin = _sc2.selectbox(
+            "corr window", list(risk_div.WINDOWS), key="_rsc_win",
+            **({} if "_rsc_win" in st.session_state else {"index": 2}))
         _sc3.markdown("<div style='height:12px'></div>", unsafe_allow_html=True)
         if _sc3.button("🎯 Run scenarios", key="_rsc_run"):
             _scns = []
@@ -2065,6 +2101,41 @@ def render_scenario():
                             eff_ivols, eff_proxies, _shk, _fred_s,
                             propagate=_prop, window=_swin)))
                 st.session_state["_risk_scn_multi"] = _out
+        # ── saved scenario sets (persisted to risk_scenarios.json) ───────────
+        _sets = _load_scn_sets()
+        _sv = st.columns([1.5, 0.55, 0.45, 1.5, 0.55])
+        _pick = _sv[0].selectbox(
+            "saved sets", ["—"] + sorted(_sets), key="_rsc_set_pick",
+            label_visibility="collapsed",
+            help="Pick a saved scenario set, then 📂 Load")
+        if _sv[1].button("📂 Load", key="_rsc_set_load",
+                         use_container_width=True) and _pick != "—":
+            st.session_state["_rsc_pending_load"] = _sets[_pick]
+            st.rerun()
+        if _sv[2].button("🗑️", key="_rsc_set_del", use_container_width=True,
+                         help="Delete the selected set") and _pick != "—":
+            _sets.pop(_pick, None)
+            _save_scn_sets(_sets)
+            st.rerun()
+        _sname = _sv[3].text_input(
+            "set name", key="_rsc_set_name", placeholder="name it — e.g. NFP day",
+            label_visibility="collapsed")
+        if _sv[4].button("💾 Save", key="_rsc_set_save",
+                         use_container_width=True):
+            if not _sname.strip():
+                st.warning("Give the set a name first.")
+            else:
+                _shocks = []
+                for _j in range(_NS):
+                    _col = {p: st.session_state.get(f"_rsc_g_{p}_{_j}", 0.0)
+                            for p in _facs}
+                    _shocks.append({p: v for p, v in _col.items() if v})
+                _sets[_sname.strip()] = {
+                    "factors": list(_facs), "shocks": _shocks,
+                    "propagate": bool(_prop), "window": _swin}
+                _save_scn_sets(_sets)
+                st.success(f"Saved '{_sname.strip()}' "
+                           f"({sum(1 for s in _shocks if s)} scenario(s)).")
         _srs = st.session_state.get("_risk_scn_multi")
         if _srs:
             st.markdown(_scn_multi_html(_srs), unsafe_allow_html=True)
