@@ -204,6 +204,34 @@ def _guess_proxy(product, name, underlying=""):
     return _FX_ROOT.get(r, name)
 
 
+_CLASS_RANK = {"Rates": 0, "FX": 1, "Equities": 2, "Commod": 3}
+
+
+def _inst_sort_key(name: str, prod: str):
+    """Class-grouped, family-grouped ordering for position tables (Rajat
+    2026-09-04: "EUUU6 P1162 and EUUU6 P1157 should be together ... rates in
+    one group then fx then equities"). Sorts by asset class, then contract
+    family (Eurex 'C OGBL 20261023 125 M' → OGBL), then expiry date token,
+    then strike — so options line up beside their future, strikes in order."""
+    s = str(name).strip()
+    toks = s.split()
+    base = toks[0]
+    if base in ("C", "P") and len(toks) > 1:       # Eurex flex style
+        base = toks[1]
+    strike = 0.0
+    m = re.findall(r"[PC](\d+(?:\.\d+)?)", s)      # CME style 'P1157'
+    if m:
+        strike = float(m[-1])
+    else:                                          # Eurex: bare strike token
+        nums = [t for t in toks[1:]
+                if re.fullmatch(r"\d+(?:\.\d+)?", t) and len(t) < 8]
+        if nums:
+            strike = float(nums[-1])
+    m8 = re.search(r"\b(\d{8})\b", s)              # Eurex expiry yyyymmdd
+    exp_n = int(m8.group(1)) if m8 else 0
+    return (_CLASS_RANK.get(prod, 9), base, exp_n, strike, s)
+
+
 def _load_risk_selection():
     """Return (futures_set, fx_set, products, ivols, proxies, exists_bool)."""
     try:
@@ -1426,18 +1454,20 @@ def _scn_multi_html(results: list) -> str:
                     f"font-weight:700'>${tot:+,.0f}</td>")
     cb += f"<tr><td style='{tf_l}'><b>Total</b></td>{ctcells}</tr>"
 
-    # union of positions, order = first result (same book for all runs)
+    # union of positions, class-grouped + family-grouped (Rajat 2026-09-04)
     pmeta: dict = {}
     for _, sr in results:
         for name, kind, proxy, _mv, _ir, _pnl, _prod in sr["rows"]:
-            pmeta.setdefault(name, (kind, proxy))
+            pmeta.setdefault(name, (kind, proxy, _prod))
+    pmeta = dict(sorted(pmeta.items(),
+                        key=lambda kv: _inst_sort_key(kv[0], kv[1][2])))
     pmap = [{name: pnl for name, _k, _x, _mv, _ir, pnl, _pr in sr["rows"]}
             for _, sr in results]
     ph = (f"<tr><th style='{th_l}'>Position</th><th style='{th}'>kind</th>"
           f"<th style='{th}'>factor</th>"
           + "".join(f"<th style='{th}'>{l}</th>" for l in labels) + "</tr>")
     pb = ""
-    for name, (kind, proxy) in pmeta.items():
+    for name, (kind, proxy, _prod) in pmeta.items():
         cells = ""
         for pm in pmap:
             if name not in pm:
@@ -1532,7 +1562,10 @@ def _pos_var_html(res: dict) -> str:
           f"<th style='{th_l}'>Proxy</th><th style='{th}'>Side</th>"
           f"<th style='{th}'>Standalone 1d VaR (1σ)</th></tr>")
     pb = ""
-    for _, r in pos.sort_values("var", ascending=False).iterrows():
+    _p2 = pos.copy()
+    _p2["_sk"] = [_inst_sort_key(n, p) for n, p in zip(_p2["name"],
+                                                       _p2["product"])]
+    for _, r in _p2.sort_values("_sk").iterrows():
         sc = _pnl_color(1 if r["sign"] > 0 else -1)
         pb += (f"<tr><td style='{td_l}'><b>{r['name']}</b></td>"
                f"<td style='{td_l};color:#94A3B8'>{r['product']}</td>"
@@ -2545,6 +2578,7 @@ def render_risk():
                      "Their PnL is muted (grey) below and **excluded from the Total**. "
                      "Click **🔃 Ref PnL** with IBKR TWS running to refresh (15-min delayed by default).")
             (st.warning if _n_live == 0 else st.info)(_bmsg)
+        _agg.sort(key=lambda x: _inst_sort_key(x[1], x[2]))
         st.markdown(_agg_table_html(_agg), unsafe_allow_html=True)
         _cls_html = _class_pnl_html(_agg)
         if _cls_html:
