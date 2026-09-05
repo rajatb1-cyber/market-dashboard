@@ -195,6 +195,12 @@ def _standalone(book, fx, sel_fut, sel_fx, products, ivols, proxies) -> pd.DataF
         s = r["Symbol"]
         if s not in sel_fut:
             continue
+        if bool(r.get("is_option")):
+            # options enter √(vᵀRv) via risk_options' extra_pos rows — the
+            # book pass gave each a junk $0 row beside the real one (their
+            # per-SYMBOL ivol is unset), duplicating every option in the
+            # standalone-VaR table (Rajat 2026-09-05)
+            continue
         prod = products.get(s, "Rates")
         iv = float(ivols.get(s) or 0.0)
         qty = float(r.get("Quantity") or 0.0)
