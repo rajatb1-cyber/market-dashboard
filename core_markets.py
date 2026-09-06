@@ -64,7 +64,13 @@ _ENSZ_YIELD = {
 # a cold compute inside a render blocked clicks queued behind the board —
 # renders read daily_store only and show "…" until the worker lands; same
 # non-blocking pattern as the Pricer's weekly-expiry warmer).
-_ENSZ_KICKED = set()      # per-process: job keys already handed to a worker
+# {job key: monotonic kick time}. A key blocks re-kicking only for
+# _ENSZ_RETRY_S — so a worker that died or hung (2026-09-06: one hung
+# yfinance call left "…" all day with no retry path) gets re-tried by a
+# later render instead of blocking until the server restarts. Overlapping
+# computes are harmless: daily_store.put is idempotent.
+_ENSZ_KICKED: dict = {}
+_ENSZ_RETRY_S = 600
 
 
 def _ensz_compute_one(job) -> None:
@@ -109,7 +115,14 @@ def _ensz_compute_one(job) -> None:
 
 def _ensz_worker(jobs: list) -> None:
     for job in jobs:
-        _ensz_compute_one(job)
+        try:
+            _ensz_compute_one(job)
+        except Exception:
+            pass
+        finally:
+            # done or failed, stop blocking the key: a completed job's next
+            # lookup hits the store (no re-kick); a failed one re-kicks
+            _ENSZ_KICKED.pop(job[1], None)
 
 
 def _ensz_lookup(kind: str, tkr: str):
@@ -1048,10 +1061,13 @@ def render_core_markets():
     # kick ONE background worker for any missing CTAz values — renders never
     # block on the compute; "…" cells fill on a later refresh
     if _ensz_jobs:
-        _new = [j for j in _ensz_jobs if j[1] not in _ENSZ_KICKED]
+        import time as _time
+        _nowk = _time.monotonic()
+        _new = [j for j in _ensz_jobs
+                if _nowk - _ENSZ_KICKED.get(j[1], -1e12) > _ENSZ_RETRY_S]
         if _new:
             for j in _new:
-                _ENSZ_KICKED.add(j[1])
+                _ENSZ_KICKED[j[1]] = _nowk
             import threading
             threading.Thread(target=_ensz_worker, args=(_new,),
                              daemon=True).start()
