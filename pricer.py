@@ -680,6 +680,22 @@ def price_future(src: str, mkt: str, lots: int, live: bool = True):
             "theta_usd": 0.0, "vega_usd": 0.0}
 
 
+# ── FX delta in DISPLAY-pair terms (Rajat 2026-09-07: "for USDJPY I want
+# this in terms of the actual USDJPY"). v2-FX delta_usd = Δ×F×mult×lots, a
+# USD-notional equivalent: P&L ≈ delta_usd × %ΔF. For display-inverted pairs
+# +1% USDJPY ≈ −1% 6J, so the per-1%-display value flips sign. ──────────────
+def _fx_delta_val(e: dict, r_: dict) -> float:
+    """$ P&L per +1% move of the DISPLAY pair."""
+    inv = f"v2:{e.get('mkt')}" in _vd._DISPLAY_INVERT
+    return (-1.0 if inv else 1.0) * r_["delta_usd"] / 100.0
+
+
+def _fx_delta_disp(e: dict, r_: dict) -> str:
+    inv = f"v2:{e.get('mkt')}" in _vd._DISPLAY_INVERT
+    pair = (f"USD{e.get('mkt')}" if inv else f"{e.get('mkt')}USD")
+    return f"{_fmt_money(_fx_delta_val(e, r_))}/1% {pair}↑"
+
+
 # ── Cost per 100 of max payoff (Rajat 2026-09-03: JPY prem in ¢/yen is
 # unreadable — "per 100 units of pnl what is the cost"). Settlement payoff is
 # piecewise linear in F, so its max sits at a strike (or F=0) unless net long
@@ -1262,13 +1278,21 @@ def render_pricer():
                 r_["prem_usd"] / math.sqrt(
                     max(int(np.busday_count(date.today(), e["exp"])), 1)))),
             "Δ %": "—" if fut else f"{r_['delta_pct']:+.1f}",
-            "Δ $": f"{_fmt_money(r_['delta_usd'])}{r_.get('delta_unit', '')}",
+            # FX Δ$ is a USD-notional equivalent (Δ×F×mult×lots — verified
+            # empirically 2026-09-07), so show it per +1% of the DISPLAY pair
+            # with the display-pair SIGN: for inverted markets (JPY/CAD/CHF/
+            # MXN) 6J up = USDJPY down, so flip (Rajat: "I want this in terms
+            # of the actual USDJPY"). Other asset classes unchanged.
+            "Δ $": (_fx_delta_disp(e, r_) if e.get("cls") == "FX"
+                    else f"{_fmt_money(r_['delta_usd'])}"
+                         f"{r_.get('delta_unit', '')}"),
             "θ $/d": "—" if fut else _fmt_money(r_["theta_usd"]),
             "Vega $": "—" if fut else _fmt_money(r_["vega_usd"]),
             "_wash": {
                 "Prem $": "w0" if fut else _wcls(r_["prem_usd"]),
                 "Prem $/√T": "w0" if fut else _wcls(r_["prem_usd"]),
-                "Δ $": _wcls(r_["delta_usd"]),
+                "Δ $": _wcls(_fx_delta_val(e, r_) if e.get("cls") == "FX"
+                             else r_["delta_usd"]),
                 "θ $/d": "w0" if fut else _wcls(r_["theta_usd"]),
                 "Vega $": "w0" if fut else _wcls(r_["vega_usd"]),
             },
@@ -1397,9 +1421,9 @@ def render_pricer():
             "Settlement smiles (spline per expiry, flat-extrapolated); v2 "
             "Black-76, rates Bachelier — per-leg IVs in [brackets]. F (live) "
             "= settlement forward shifted to the yahoo quote. Δ$ per 1.0pt "
-            "(rates per 1bp yield; FX = USD-EQUIVALENT notional, Δ × ccy "
-            "size × $ price — a plain $ figure, no /pt; futures lines = "
-            "lots × multiplier, FX × F); θ per "
+            "(rates per 1bp yield; FX = $ per +1% of the DISPLAY pair, sign "
+            "in display-pair direction — positive on a USDJPY line = long "
+            "dollars; futures lines = lots × multiplier, FX × F); θ per "
             "calendar day; vega per 1pp IV; Δ totals kept in native units. "
             "European contracts (€/£) unconverted. ¢/100 = premium as a "
             "share of the structure's max settlement payoff (costs X to "
