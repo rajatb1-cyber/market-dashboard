@@ -1,28 +1,28 @@
-"""Options VaR for the Risk/VaR tab (Rajat 2026-08-24).
+﻿"""Options VaR for the Risk/VaR tab (Rajat 2026-08-24).
 
-Two methods, selected in the dropdown beside 🎲 Run VaR Risk:
+Two methods, selected in the dropdown beside ðŸŽ² Run VaR Risk:
 
-- **Delta-equivalent mapping** — each option becomes delta × lots × mult of
-  its underlying future (× DV01 → $/bp for rates) and enters risk_div's
-  parametric √(vᵀRv) as an extra signed row: the underlying's proxy carries
-  the correlation, magnitude = |delta-equiv $risk| × underlying implied vol
-  / √256. Fast, linear — understates gamma near strikes/expiry.
+- **Delta-equivalent mapping** â€” each option becomes delta Ã— lots Ã— mult of
+  its underlying future (Ã— DV01 â†’ $/bp for rates) and enters risk_div's
+  parametric âˆš(váµ€Rv) as an extra signed row: the underlying's proxy carries
+  the correlation, magnitude = |delta-equiv $risk| Ã— underlying implied vol
+  / âˆš256. Fast, linear â€” understates gamma near strikes/expiry.
 
-- **Full-revaluation historical** — each structure is repriced under the
+- **Full-revaluation historical** â€” each structure is repriced under the
   last ~250 daily underlying moves applied to today's forward (per-leg
-  fitted IVs held sticky, T fixed at today's — a 1d horizon), giving a P&L
+  fitted IVs held sticky, T fixed at today's â€” a 1d horizon), giving a P&L
   distribution per position: VaR95/99 from percentiles (gamma-exact,
-  condor kinks included), 1σ = std feeds √(vᵀRv) via the same proxy row.
+  condor kinks included), 1Ïƒ = std feeds âˆš(váµ€Rv) via the same proxy row.
   Vol risk is NOT captured (price risk, vol held constant).
 
-All pricing runs off pricer.price_structure / pricer._scn_value — the same
+All pricing runs off pricer.price_structure / pricer._scn_value â€” the same
 settlement surfaces the Pricer tab shows, no new data fetches beyond the
 underlying history (yfinance for equity/commod/FX, stir_bars.db for STIR
-contracts, the position's saved yield proxy × DV01 for bond futures).
+contracts, the position's saved yield proxy Ã— DV01 for bond futures).
 """
 from __future__ import annotations
 
-_BUILD = "2026-09-04.1"   # shown in the tab — bump when this module changes
+_BUILD = "2026-09-07.1"   # shown in the tab â€” bump when this module changes
 
 import math
 import re
@@ -36,7 +36,7 @@ import pandas as pd
 _HERE = Path(__file__).parent
 _STIR_DB = str(_HERE / "stir_bars.db")
 
-# IBKR underlying root → (src, mkt) in the pricer universe
+# IBKR underlying root â†’ (src, mkt) in the pricer universe
 _ROOT_MAP = {
     "ES": ("v2", "ES"), "NQ": ("v2", "NQ"), "RTY": ("v2", "RTY"),
     "MES": ("v2", "ES"), "MNQ": ("v2", "NQ"), "M2K": ("v2", "RTY"),
@@ -55,21 +55,26 @@ _ROOT_MAP = {
     "SR3": ("rates", "SOFR"), "SO3": ("rates", "SONIA"),
     "I": ("rates", "ER"), "ER": ("rates", "ER"),
     # IB-symbol style underlyings (live Flex pulls report e.g. "SOFR3"
-    # instead of the contract "SR3U6" — seen 2026-08-24)
+    # instead of the contract "SR3U6" â€” seen 2026-08-24)
     "SOFR3": ("rates", "SOFR"), "SONIA3": ("rates", "SONIA"),
     "EUU": ("v2", "EUR"),
-    # FX FOP roots ≠ future roots (EUU/JPU/GBU — see reference_fx_fop_ibkr);
+    # FX FOP roots â‰  future roots (EUU/JPU/GBU â€” see reference_fx_fop_ibkr);
     # JPUV6 puts hit the unmapped-root skip 2026-09-04
     "JPU": ("v2", "JPY"), "GBU": ("v2", "GBP"),
 }
 # stir_bars.db symbol for each STIR pricer market
 _STIR_DB_SYM = {"SOFR": "SR3", "SONIA": "SO3", "ER": "I"}
+# v2 FX markets: pricer delta_usd is ALREADY a USD-notional equivalent
+# (Î”Ã—FÃ—multÃ—lots â€” pricer caption + empirical probe 2026-09-07), unlike
+# equities/commod where it is $/pt. Branch on this set to avoid the double-F
+# bug (FX option Î”-est ~150Ã— too small; delta-mode VaR/exposures likewise).
+_FX_V2 = {"EUR", "GBP", "JPY", "AUD", "CAD", "CHF", "MXN", "NZD"}
 _MONTH_CODE = {"F": 1, "G": 2, "H": 3, "J": 4, "K": 5, "M": 6,
                "N": 7, "Q": 8, "U": 9, "V": 10, "X": 11, "Z": 12}
 
 
 def _split_contract(sym: str):
-    """'SR3U6' → ('SR3', '202609'); Eurex Flex style 'FGBL 20261208 M' →
+    """'SR3U6' â†’ ('SR3', '202609'); Eurex Flex style 'FGBL 20261208 M' â†’
     ('FGBL', '202612'). Year digit resolved to the nearest present-or-future
     decade year."""
     s = (sym or "").strip()
@@ -91,7 +96,7 @@ def _split_contract(sym: str):
 
 
 def _midcurve(mkt: str, und_exp6: str | None, expiry: date) -> str:
-    """STIR options on a deferred quarterly are midcurves → _1Y/_2Y market."""
+    """STIR options on a deferred quarterly are midcurves â†’ _1Y/_2Y market."""
     if mkt not in _STIR_DB_SYM or not und_exp6:
         return mkt
     off_m = (int(und_exp6[:4]) - expiry.year) * 12 + int(und_exp6[4:6]) - expiry.month
@@ -104,13 +109,13 @@ def _midcurve(mkt: str, und_exp6: str | None, expiry: date) -> str:
 
 def underlying_key(sym: str) -> str:
     """Normalize a futures symbol to its underlying complex for the net-risk
-    split ('SR3M6'/'SR3U6' → 'SOFR', 'MESU6' → 'ES'); unmapped → the root."""
+    split ('SR3M6'/'SR3U6' â†’ 'SOFR', 'MESU6' â†’ 'ES'); unmapped â†’ the root."""
     root, _ = _split_contract(sym)
     pair = _ROOT_MAP.get(root)
     return pair[1] if pair else root
 
 
-# IB-symbol / Eurex underlying spellings → the contract root style the book's
+# IB-symbol / Eurex underlying spellings â†’ the contract root style the book's
 # own futures rows use, so option deltas land on the SAME split row
 _CANON_ROOT = {"SOFR3": "SR3", "SONIA3": "SO3", "EUU": "EUR", "EUUU": "EUR",
                "JPU": "JPY", "GBU": "GBP"}
@@ -119,8 +124,8 @@ _CODE_MONTH = {v: k for k, v in _MONTH_CODE.items()}
 
 def underlying_contract(sym: str, exp6: str | None = None) -> str:
     """Canonical per-CONTRACT key for the net-risk split (Rajat 2026-08-24:
-    'not SOFR but SR3M6, SR3U6'): 'SR3M6' → 'SR3M6'; 'SOFR3' + 202609 →
-    'SR3U6'; 'FGBL 20261208 M' → 'FGBLZ6'. Root-only with no month → root."""
+    'not SOFR but SR3M6, SR3U6'): 'SR3M6' â†’ 'SR3M6'; 'SOFR3' + 202609 â†’
+    'SR3U6'; 'FGBL 20261208 M' â†’ 'FGBLZ6'. Root-only with no month â†’ root."""
     root, e = _split_contract(sym)
     root = _CANON_ROOT.get(root, root)
     e = e or exp6
@@ -133,8 +138,8 @@ def underlying_contract(sym: str, exp6: str | None = None) -> str:
 
 
 def option_book(book: pd.DataFrame, sel: set | None = None):
-    """Parse is_option rows → position dicts + skip notes. `sel` (the saved
-    ✓ selection) filters like the futures table does; None = all options."""
+    """Parse is_option rows â†’ position dicts + skip notes. `sel` (the saved
+    âœ“ selection) filters like the futures table does; None = all options."""
     opts, notes = [], []
     if book is None or book.empty or "is_option" not in book.columns:
         return opts, notes
@@ -146,10 +151,10 @@ def option_book(book: pd.DataFrame, sel: set | None = None):
         root, und_exp6 = _split_contract(und)
         pair = _ROOT_MAP.get(root)
         if pair is None:
-            notes.append(f"{sym}: underlying root “{root}” not mapped — skipped")
+            notes.append(f"{sym}: underlying root â€œ{root}â€ not mapped â€” skipped")
             continue
-        # Put/Call: Flex field → SubCategory → parse the symbol itself
-        # ("ESU6 P7600" / "P OGBL 20261023 119 M") — live Web-Service pulls
+        # Put/Call: Flex field â†’ SubCategory â†’ parse the symbol itself
+        # ("ESU6 P7600" / "P OGBL 20261023 119 M") â€” live Web-Service pulls
         # ship the rows with the field empty (seen 2026-08-24)
         right = str(r.get("PutCall") or "").strip().upper()[:1]
         if right not in ("P", "C"):
@@ -162,25 +167,25 @@ def option_book(book: pd.DataFrame, sel: set | None = None):
             if m:
                 right = m.group(1)
         if right not in ("P", "C"):
-            notes.append(f"{sym}: no Put/Call flag in Flex — skipped")
+            notes.append(f"{sym}: no Put/Call flag in Flex â€” skipped")
             continue
         try:
             expiry = pd.Timestamp(str(r.get("Expiry"))).date()
         except Exception:
-            notes.append(f"{sym}: bad expiry “{r.get('Expiry')}” — skipped")
+            notes.append(f"{sym}: bad expiry â€œ{r.get('Expiry')}â€ â€” skipped")
             continue
         # strictly-past only: an option expiring TODAY still has today's move
         # in it (Rajat 2026-09-04: EUU put spread expiring NFP day was
-        # silently dropped from the scenario tool) — it prices with tiny T
+        # silently dropped from the scenario tool) â€” it prices with tiny T
         if expiry < date.today():
-            notes.append(f"{sym}: expired {expiry} — skipped")
+            notes.append(f"{sym}: expired {expiry} â€” skipped")
             continue
         src, mkt = pair
-        # IB-symbol underlyings ("SOFR3", "ES") carry no contract month —
+        # IB-symbol underlyings ("SOFR3", "ES") carry no contract month â€”
         # derive the quarterly from the option expiry (its own quarter,
         # rounded up; right for STIR/index/FX quarterlies+serials, approx
         # for monthly commodity cycles). NB midcurves can't be detected
-        # without a contract month → treated as front.
+        # without a contract month â†’ treated as front.
         if not und_exp6:
             qm = ((expiry.month + 2) // 3) * 3
             und_exp6 = f"{expiry.year:04d}{qm:02d}"
@@ -211,9 +216,9 @@ def _greeks(o: dict, live: bool):
 
 
 def _hist_dF(o: dict, F0: float, dv01, proxy, fred_key, n: int = 260):
-    """Daily ΔF history in PRICE POINTS of the underlying future (newest last).
-    STIR → exact contract closes from stir_bars.db; v2 markets → yfinance
-    continuous ×F0; bond futures → saved yield proxy (−Δy, pp) × DV01×100."""
+    """Daily Î”F history in PRICE POINTS of the underlying future (newest last).
+    STIR â†’ exact contract closes from stir_bars.db; v2 markets â†’ yfinance
+    continuous Ã—F0; bond futures â†’ saved yield proxy (âˆ’Î”y, pp) Ã— DV01Ã—100."""
     base = o["mkt"].split("_")[0]
     if base in _STIR_DB_SYM:
         try:
@@ -239,7 +244,7 @@ def _hist_dF(o: dict, F0: float, dv01, proxy, fred_key, n: int = 260):
             return (h.pct_change().dropna() * F0).tail(n)
         except Exception:
             return pd.Series(dtype=float)
-    # bond futures: proxy yields via risk_div (price-like: −Δy in pp)
+    # bond futures: proxy yields via risk_div (price-like: âˆ’Î”y in pp)
     if not (dv01 and proxy):
         return pd.Series(dtype=float)
     try:
@@ -247,7 +252,7 @@ def _hist_dF(o: dict, F0: float, dv01, proxy, fred_key, n: int = 260):
         start = (pd.Timestamp.today() - pd.Timedelta(days=750)).date().isoformat()
         risk_div._prime_proxy_batch([proxy], start)
         r = risk_div._proxy_returns(proxy, start, fred_key)
-        return (r * dv01 * 100.0).tail(n)     # pp × (pts/bp × 100 bp/pp)
+        return (r * dv01 * 100.0).tail(n)     # pp Ã— (pts/bp Ã— 100 bp/pp)
     except Exception:
         return pd.Series(dtype=float)
 
@@ -260,7 +265,7 @@ def _und_moves(o: dict):
     """Underlying price moves in POINTS vs the close 1/3/5 business days back:
     v2 markets from yfinance daily closes (incl. today's partial bar = the
     rough live mark), STIR from the exact contract's settles in stir_bars.db.
-    Returns {1: Δ, 3: Δ, 5: Δ} or None (bond futures → no easy history)."""
+    Returns {1: Î”, 3: Î”, 5: Î”} or None (bond futures â†’ no easy history)."""
     base = o["mkt"].split("_")[0]
     closes = None
     if base in _STIR_DB_SYM:
@@ -295,10 +300,10 @@ def _und_moves(o: dict):
 
 
 def est_pnl(book: pd.DataFrame, sel: set | None = None, live: bool = True) -> dict:
-    """Rough option PnL from delta × underlying move (Rajat 2026-08-26:
-    'better than blank — keep it grey'). {symbol: {1:$, 3:$, 5:$}} for the
+    """Rough option PnL from delta Ã— underlying move (Rajat 2026-08-26:
+    'better than blank â€” keep it grey'). {symbol: {1:$, 3:$, 5:$}} for the
     options whose underlying has a usable history; memoized ~2 min. First
-    order only — gamma/vega/theta ignored, hence the muted display."""
+    order only â€” gamma/vega/theta ignored, hence the muted display."""
     import time as _t
     now = _t.time()
     key = "est_pnl"
@@ -319,6 +324,11 @@ def est_pnl(book: pd.DataFrame, sel: set | None = None, live: bool = True) -> di
                 if not dv01:
                     continue
                 pdelta = pdelta / float(dv01)               # back to $/pt
+            if o["src"] == "v2" and o["mkt"].split("_")[0] in _FX_V2:
+                F0 = float(res.get("F") or 0.0)
+                if not F0:
+                    continue
+                pdelta = pdelta / F0        # FX: notional â†’ $/pt of the future
             mk = (o["src"], o["mkt"], o["und_exp6"])
             if mk not in moves_memo:
                 moves_memo[mk] = _und_moves(o)
@@ -328,17 +338,18 @@ def est_pnl(book: pd.DataFrame, sel: set | None = None, live: bool = True) -> di
             out[o["sym"]] = {hz: pdelta * d * o["fxr"] for hz, d in mv.items()}
         except Exception:
             continue
-    _PNL_MEMO[key] = (now, out)
+    if out:                 # don't memoize a fully-failed pass (transient yf
+        _PNL_MEMO[key] = (now, out)   # outage was caching 2min of blanks)
     return out
 
 
 def compute(book: pd.DataFrame, mode: str, products: dict, ivols: dict,
             proxies: dict, fred_key=None, live: bool = True,
             sel: set | None = None) -> dict:
-    """mode ∈ {'delta', 'reval'} → {rows, extra_pos, total, notes, mode}.
-    rows    — per-position display tuples for the report box
-    extra_pos — [name, product, proxy, sign, var(1σ$)] rows for risk_div
-    total   — (reval only) options-book VaR from the summed P&L vectors."""
+    """mode âˆˆ {'delta', 'reval'} â†’ {rows, extra_pos, total, notes, mode}.
+    rows    â€” per-position display tuples for the report box
+    extra_pos â€” [name, product, proxy, sign, var(1Ïƒ$)] rows for risk_div
+    total   â€” (reval only) options-book VaR from the summed P&L vectors."""
     import risk as _risk
 
     opts, notes = option_book(book, sel)
@@ -346,7 +357,7 @@ def compute(book: pd.DataFrame, mode: str, products: dict, ivols: dict,
     for o in opts:
         res = _greeks(o, live)
         if res.get("err"):
-            notes.append(f"{o['sym']}: {res['err']} — skipped")
+            notes.append(f"{o['sym']}: {res['err']} â€” skipped")
             continue
         d_usd = float(res.get("delta_usd") or 0.0) * o["fxr"]
         dv01 = res.get("dv01")
@@ -359,24 +370,28 @@ def compute(book: pd.DataFrame, mode: str, products: dict, ivols: dict,
         if prod == "Rates":
             risk_de = abs(d_usd)                       # already $/bp
             de_txt = f"${abs(d_usd):,.0f}/bp"
-            # rates split rows are PER CONTRACT (Rajat: "SR3M6, SR3U6 …");
-            # equities/FX/commod stay at the complex level (ES, EUR, …)
+            # rates split rows are PER CONTRACT (Rajat: "SR3M6, SR3U6 â€¦");
+            # equities/FX/commod stay at the complex level (ES, EUR, â€¦)
             exposures.append((prod,
                               underlying_contract(o["und"], o["und_exp6"]),
                               d_usd))                          # signed $/bp
+        elif o["src"] == "v2" and o["mkt"].split("_")[0] in _FX_V2:
+            risk_de = abs(d_usd)                       # ALREADY $ notional
+            de_txt = f"${risk_de:,.0f}"
+            exposures.append((prod, o["mkt"], d_usd))          # signed $ ntl
         else:
-            risk_de = abs(d_usd) * F0                  # $ notional equiv
+            risk_de = abs(d_usd) * F0                  # $/pt Ã— F = $ notional
             de_txt = f"${risk_de:,.0f}"
             exposures.append((prod, o["mkt"], d_usd * F0))     # signed $ ntl
-        # underlying vol: manual ⚙ ivol if saved for this underlying, else the
+        # underlying vol: manual âš™ ivol if saved for this underlying, else the
         # leg's own fitted surface IV (so delta mode works with zero setup)
         iv_u = ivols.get(o["und"]) or ivols.get(o["root"])
         if not iv_u:
             try:
                 leg_iv = float(res["legs"][0]["iv"])
-                if prod == "Rates":            # Bachelier price-vol pts → bp/yr
+                if prod == "Rates":            # Bachelier price-vol pts â†’ bp/yr
                     iv_u = leg_iv / dv01 if dv01 else None
-                else:                          # Black vol fraction → % ann
+                else:                          # Black vol fraction â†’ % ann
                     iv_u = leg_iv * 100.0
             except Exception:
                 iv_u = None
@@ -390,7 +405,7 @@ def compute(book: pd.DataFrame, mode: str, products: dict, ivols: dict,
                 v95, v99 = var1s * 1.645, var1s * 2.326
             else:
                 notes.append(f"{o['sym']}: no vol available (no manual ivol, "
-                             f"no surface fit) — skipped")
+                             f"no surface fit) â€” skipped")
         else:                                          # full reval
             dF = _hist_dF(o, F0, dv01, proxy, fred_key)
             n_obs = len(dF)
@@ -406,7 +421,7 @@ def compute(book: pd.DataFrame, mode: str, products: dict, ivols: dict,
                 v99 = float(-np.percentile(pnl.values, 1))
             else:
                 notes.append(f"{o['sym']}: only {n_obs} days of underlying "
-                             "history — skipped")
+                             "history â€” skipped")
         if var1s:
             extra.append([o["sym"], prod, proxy, sign, float(var1s)])
         rows.append((o["sym"], o["mkt"], o["right"], o["K"], o["expiry"],
@@ -426,8 +441,9 @@ def compute(book: pd.DataFrame, mode: str, products: dict, ivols: dict,
 
 
 def _reval(o: dict, res: dict, F: float) -> float:
-    """Structure value (pts, 1 lot) at forward F — per-leg IVs sticky, T fixed."""
+    """Structure value (pts, 1 lot) at forward F â€” per-leg IVs sticky, T fixed."""
     import pricer
     return pricer._scn_value(o["src"], res["legs"], F,
                              max(float(res["T"] or 0.0), 1e-6),
                              float(res.get("r") or 0.0))
+
