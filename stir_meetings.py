@@ -105,6 +105,21 @@ def _parse_month(raw: str):
 
 
 @st.cache_data(ttl=1800, show_spinner=False)
+def _avail_end(ds: str) -> date:
+    """Last AVAILABLE date for `ds` from Databento's free dataset-range
+    metadata (Rajat 2026-09-02: data is there ~T-1 by morning — the
+    conservative _trade_date offset guess left a licensed day on the table).
+    Falls back to the offset guess on any metadata error."""
+    try:
+        import databento as db
+        r = db.Historical(key=_api_key()).metadata.get_dataset_range(dataset=ds)
+        return date.fromisoformat(str(r["end"])[:10])
+    except Exception:
+        import vol_dashboard as _vd
+        return _vd._trade_date(ds)
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
 def fetch_strips() -> dict:
     """{cb: {(y,m): implied_avg_rate}}, settle date; disk-cached per day."""
     today = date.today()
@@ -112,18 +127,35 @@ def fetch_strips() -> dict:
     if os.path.exists(fp):
         try:
             with open(fp, "rb") as fh:
-                return pickle.load(fh)
+                cached = pickle.load(fh)
+            # STALENESS-AWARE (Rajat 2026-09-02: BoE strip served Friday's
+            # settles all day): a morning fetch can pre-date the ICE embargo
+            # clearing, so the day-pickle is valid only while each leg's asof
+            # matches the currently LICENSED trade date. When behind, re-attempt
+            # at most every 2h (a retry costs ~$0.01-0.05 and may legitimately
+            # return the same window until the embargo clears).
+            import time as _t
+
+            def _stale(cb):
+                a = (cached.get(cb) or {}).get("asof")
+                try:
+                    return (a is not None and date.fromisoformat(str(a))
+                            < _avail_end(_CB[cb]["ds"]))
+                except Exception:
+                    return False
+            if (not any(_stale(cb) for cb in _CB)
+                    or _t.time() - cached.get("_fetch_ts", 0) < 7200):
+                return cached
         except Exception:
             pass
     import databento as db
-    import vol_dashboard as _vd
     client = db.Historical(key=_api_key())
     out = {"asof": None}
     for cb, cfg in _CB.items():
         try:
-            # per-dataset licensed trade date (IMPACT datasets embargo ~24h —
-            # end=today 422s on IFLL; _trade_date knows each feed's window)
-            tdate = _vd._trade_date(cfg["ds"])
+            # per-dataset AVAILABLE date from free metadata (2026-09-02;
+            # end=today still 422s, and the retry loop below is the backstop)
+            tdate = _avail_end(cfg["ds"])
             df = None
             for _back in range(3):    # step back on the license's ~24h embargo
                 start = (tdate - timedelta(days=7)).isoformat()
@@ -141,7 +173,10 @@ def fetch_strips() -> dict:
                         end=end).to_df(map_symbols=True)
                     break
                 except Exception as _fe:
-                    if "unavailable_range" in str(_fe) and _back < 2:
+                    # any availability/licence-window error → step back a day
+                    if _back < 2 and any(s in str(_fe) for s in
+                                         ("unavailable_range", "available_end",
+                                          "license_not_found")):
                         tdate -= timedelta(days=1)
                         continue
                     raise
@@ -171,6 +206,8 @@ def fetch_strips() -> dict:
             out["asof"] = str(df.index[-1].date())
         except Exception as e:
             out[cb] = {"err": f"{type(e).__name__}: {e}"}
+    import time as _t
+    out["_fetch_ts"] = _t.time()      # staleness re-attempt backoff anchor
     # cache only COMPLETE snapshots — a pickled half-failure would otherwise
     # freeze the error for the rest of the day (hit 2026-08-27)
     if all("months" in (out.get(cb) or {}) for cb in _CB):
@@ -269,13 +306,25 @@ def _next_bday(d: date) -> date:
 @st.cache_data(ttl=1800, show_spinner=False)
 def fetch_tona(host: str = "127.0.0.1", port: int = 7496) -> dict:
     """{(y,m): implied avg TONA over the contract's ref quarter} for the next
-    ~5 quarterly TOA3M contracts (ref window = IMM Wed → IMM Wed + 3m)."""
+    ~5 quarterly TOA3M contracts (ref window = IMM Wed → IMM Wed + 3m).
+    DISK-CACHED PER DAY (2026-09-01): these are frozen closes/settles, and the
+    mdtype=4 (delayed-frozen) requests behind them are the app's only remaining
+    delayed-machinery path — the revived prime suspect for TWS "subscribe"
+    prompts (incidents 2026-08-31/09-01 both within ~30min of Meetings-tab
+    loads). One strip snapshot per day caps the exposure at 5 subs/day."""
     try:
         from ib_insync import Future
         import ibkr_conn
     except Exception as e:
         return {"err": f"ib_insync unavailable ({e})"}
     today = date.today()
+    _fp_tona = os.path.join(_CACHE_DIR, f"TONA_{today.isoformat()}.pkl")
+    if os.path.exists(_fp_tona):
+        try:
+            with open(_fp_tona, "rb") as fh:
+                return pickle.load(fh)
+        except Exception:
+            pass
     # quarterly cycle Mar/Jun/Sep/Dec; keep the 5 whose ref window (IMM Wed →
     # IMM Wed +3m) hasn't ended — includes the in-progress contract. (The
     # first cut generated Jul/Oct/Jan months — nonexistent contracts, so
@@ -284,20 +333,8 @@ def fetch_tona(host: str = "127.0.0.1", port: int = 7496) -> dict:
              for m in (3, 6, 9, 12)]
     quarters = [q for q in cands
                 if _imm_wed(q[0] + (q[1] > 9), (q[1] + 2) % 12 + 1) > today][:5]
-    # Rajat 2026-08-27: quotes, not bars — one frozen snapshot for the whole
-    # strip via quotes() (mdtype 2 = frozen close even when OSE is shut; no
-    # hist-pacing cost, reqMktData resolves the contract itself). OSE carries
-    # NUMERIC IB symbols (contract detail showed Symbol=161060091) — try
-    # candidate symbols until one batch resolves.
-    import math as _m
-
-    def _px(t):
-        for a in ("last", "close"):
-            v = getattr(t, a, None)
-            if v is not None and _m.isfinite(v) and 90 <= v <= 100:
-                return float(v)
-        return None
-
+    # (2026-08-27 note kept for history: OSE carries NUMERIC IB symbols —
+    # plain symbol=TOA3M + contract month resolves; success judged by PRICE.)
     dbg = [f"today={today} quarters={quarters}"]
     ibl, cerr = ibkr_conn.get_conn()
     if ibl is None:
@@ -321,22 +358,29 @@ def fetch_tona(host: str = "127.0.0.1", port: int = 7496) -> dict:
         dbg.append("(could not hook errorEvent)")
 
     def _snap(cons, note):
-        # mdtype 4 = delayed-frozen: Rajat's OSE data is the delayed feed
-        # (TWS shows it automatically; the API must request delayed —
-        # frozen(2) got err 10168 "delayed not enabled", 2026-08-27)
-        try:
-            ts = ibkr_conn.quotes(cons, mdtype=4, settle_s=4.0, ibl=ibl,
-                                  tag="tona_meetings")
-        except Exception as e:
-            dbg.append(f"{note}: quotes RAISED {type(e).__name__}: {e}")
-            return [None] * len(cons)
-        return ts
-
-    def _fmt(t):
-        _c = getattr(t, "contract", None)
-        return (f"conId={getattr(_c, 'conId', '?')} "
-                f"local='{getattr(_c, 'localSymbol', '')}' "
-                f"last={getattr(t, 'last', None)} close={getattr(t, 'close', None)}")
+        # HIST BARS, not delayed quotes (2026-09-02): the mdtype=4 quote
+        # burst was the last delayed-machinery path in the app and the prime
+        # suspect for TWS "subscribe" prompts — 3 incidents 08-31→09-02, each
+        # ~30min after the daily TONA fetch (Rajat: "seems to be happening
+        # around the meeting tab"). reqHistoricalData never touches the
+        # market-data-type system; daily close = settlement; the pre-08-27
+        # design used bars successfully. Cost: ~5 hist reqs once/day (disk-
+        # cached) against the 250/day budget. Delayed-quote code retired.
+        ps = []
+        for c in cons:
+            px = None
+            try:
+                bars = ibkr_conn.hist_bars(c, durationStr="3 D",
+                                           barSizeSetting="1 day",
+                                           whatToShow="TRADES", ibl=ibl,
+                                           tag="tona_meetings")
+                if bars:
+                    px = float(bars[-1].close)
+            except Exception as e:
+                dbg.append(f"{note} {getattr(c, 'lastTradeDateOrContractMonth', '')}: "
+                           f"hist_bars {type(e).__name__}: {str(e)[:80]}")
+            ps.append(px)
+        return ps
 
     # Resolution settled 2026-08-27 (see memory): plain symbol=TOA3M +
     # ref-quarter contract month resolves; the whole earlier failure was
@@ -346,11 +390,11 @@ def fetch_tona(host: str = "127.0.0.1", port: int = 7496) -> dict:
                  tradingClass="TOA3M",
                  lastTradeDateOrContractMonth=f"{qy:04d}{qm_:02d}")
           for (qy, qm_) in quarters]
-    ts = _snap(cs, "strip")
-    for q, t in zip(quarters, ts):
-        dbg.append(f"strip {q}: " + (_fmt(t) if t is not None else "None"))
-    out = {q: _px(t) for q, t in zip(quarters, ts) if t is not None}
-    out = {q: 100.0 - p for q, p in out.items() if p is not None}
+    ps = _snap(cs, "strip")
+    for q, p in zip(quarters, ps):
+        dbg.append(f"strip {q}: close={p}")
+    out = {q: 100.0 - p for q, p in zip(quarters, ps)
+           if p is not None and 90 <= p <= 100}
     try:
         ibl._ib.errorEvent -= _on_err
     except Exception:
@@ -360,9 +404,107 @@ def fetch_tona(host: str = "127.0.0.1", port: int = 7496) -> dict:
         dbg.append("TWS errors during snapshots:")
         dbg.extend("  " + e for e in seen[:12])
     if out:
-        return {"windows": out, "debug": "\n".join(dbg)}
+        res = {"windows": out, "debug": "\n".join(dbg)}
+        try:                       # persist ONLY a successful strip for the day
+            with open(_fp_tona, "wb") as fh:
+                pickle.dump(res, fh)
+        except Exception:
+            pass
+        return res
     return {"err": "no TOA3M quotes resolved — see debug",
             "debug": "\n".join(dbg)}
+
+
+# ── BoE cross-check: liquid ICE 3M SONIA (SO3) quarterlies vs the SOA-based
+# meeting path (Rajat 2026-09-02: "why not 3m contracts which are more
+# standard" → keep 1M for exact per-meeting resolution, use 3M as the
+# market-liquidity sanity check). Frozen quotes ONLY (mdtype=2 — never the
+# delayed machinery); contracts built directly, no reqContractDetails (hangs
+# in Rajat's TWS). Disk-cached per day like the TONA strip.
+@st.cache_data(ttl=1800, show_spinner=False)
+def fetch_so3(host: str = "127.0.0.1", port: int = 7496) -> dict:
+    """{(y,m): implied compounded SONIA} for the next ~4 fully-forward ICE
+    SO3 quarterlies (window = IMM Wed → IMM Wed +3m)."""
+    try:
+        from ib_insync import Future
+        import ibkr_conn
+    except Exception as e:
+        return {"err": f"ib_insync unavailable ({e})"}
+    import math as _m
+    today = date.today()
+    _fp = os.path.join(_CACHE_DIR, f"SO3_{today.isoformat()}.pkl")
+    if os.path.exists(_fp):
+        try:
+            with open(_fp, "rb") as fh:
+                return pickle.load(fh)
+        except Exception:
+            pass
+    cands = [(y, m) for y in range(today.year, today.year + 3)
+             for m in (3, 6, 9, 12)]
+    # fully-forward windows only — elapsed windows would need realized SONIA
+    quarters = [q for q in cands if _imm_wed(*q) > today][:4]
+    ibl, cerr = ibkr_conn.get_conn()
+    if ibl is None:
+        return {"err": f"IBKR connection failed: {cerr}"}
+    cs = [Future(symbol="SO3", exchange="ICEEU", currency="GBP",
+                 lastTradeDateOrContractMonth=f"{qy:04d}{qm_:02d}")
+          for (qy, qm_) in quarters]
+    try:
+        ts = ibkr_conn.quotes(cs, mdtype=2, settle_s=3.0, ibl=ibl,
+                              tag="meetings_so3")
+    except Exception as e:
+        return {"err": f"SO3 quotes failed: {type(e).__name__}: {e}"}
+
+    def _px(t):
+        for a in ("last", "close"):
+            v = getattr(t, a, None)
+            if v is not None and _m.isfinite(v) and 90 <= v <= 100:
+                return float(v)
+        return None
+    months = {q: 100.0 - p for q, p in
+              ((q, _px(t)) for q, t in zip(quarters, ts) if t is not None)
+              if p is not None}
+    if not months:
+        return {"err": "no SO3 quotes resolved"}
+    res = {"months": months}
+    try:
+        with open(_fp, "wb") as fh:
+            pickle.dump(res, fh)
+    except Exception:
+        pass
+    return res
+
+
+def so3_check(res: dict, so3_months: dict) -> list:
+    """[(label, path_avg, market, gap_bp)] — the BoE meeting path's implied
+    average rate over each SO3 window vs the contract's own implied rate.
+    Simple time-weighted average of the stepped path (≈ compounding at these
+    levels, same approximation as the strip legs)."""
+    if not res or not res.get("rows") or not so3_months:
+        return []
+    rows = res["rows"]
+    r0 = rows[0][2]
+    steps = [(eff, post) for _d, eff, _p, post, *_x in rows]
+    last_eff = steps[-1][0]
+
+    def _rate_at(d):
+        r = r0
+        for eff, post in steps:
+            if d >= eff:
+                r = post
+        return r
+    out = []
+    for (y, m) in sorted(so3_months):
+        w0 = _imm_wed(y, m)
+        w1 = _imm_wed(y + (m > 9), (m + 2) % 12 + 1)
+        if w0 > last_eff + timedelta(days=200):   # far beyond modelled path
+            continue
+        nd = (w1 - w0).days
+        avg = sum(_rate_at(w0 + timedelta(days=i)) for i in range(nd)) / nd
+        mkt = so3_months[(y, m)]
+        out.append((f"SO3{'HMUZ'[(3, 6, 9, 12).index(m)]}{y % 10}",
+                    avg, mkt, (mkt - avg) * 100))
+    return out
 
 
 def bootstrap_windows(windows: dict, decisions: list,
@@ -589,6 +731,25 @@ def render_meetings(host: str = "127.0.0.1", port: int = 7496):
         return
     st.plotly_chart(_path_chart(results), use_container_width=True)
     _rate_lbl = {"FOMC": "EFFR", "ECB": "€STR", "BoE": "SONIA", "BoJ": "TONA"}
+    _so3 = fetch_so3(host, port) if "BoE" in results else {}
+    _so3_rows = so3_check(results.get("BoE"), _so3.get("months") or {})
+    # per-table data-vintage line (Rajat 2026-09-02: "precisely telling me the
+    # curve is constructed off which close")
+    _strip_name = {"FOMC": "CBOT ZQ 1M Fed Funds",
+                   "ECB": "ICE EON 1M €STR",
+                   "BoE": "ICE SOA 1M SONIA"}
+
+    def _vintage(cb) -> str:
+        if cb == "BoJ":
+            _src = ("today's frozen IBKR quote" if "windows" in tona
+                    else "unavailable")
+            return f"OSE TOA3M 3M TONA strip · {_src}"
+        a = (data.get(cb) or {}).get("asof", "?")
+        n_live = _live_n.get(cb, 0)
+        s = f"{_strip_name[cb]} · settlement close of <b>{a}</b>"
+        if n_live:
+            s += f" · <b>{n_live}</b> months overridden by live IBKR quotes"
+        return s
     cols = st.columns(len(results))
     for col, cb in zip(cols, [c for c in ("FOMC", "ECB", "BoE", "BoJ")
                               if c in results]):
@@ -598,8 +759,39 @@ def render_meetings(host: str = "127.0.0.1", port: int = 7496):
                         f"**{r0:.3f}%**" if r0 else f"**{cb}**",
                         unsafe_allow_html=True)
             st.markdown(_cb_table(cb, results[cb]), unsafe_allow_html=True)
-    _asofs = " · ".join(f"{cb} {(data.get(cb) or {}).get('asof', '?')}"
-                        for cb in _CB if "months" in (data.get(cb) or {}))
+            st.markdown("<div style='font-size:10.5px;color:#94A3B8;"
+                        f"margin-top:3px'>{_vintage(cb)}</div>",
+                        unsafe_allow_html=True)
+            if cb == "BoE":
+                if _so3_rows:
+                    _bits = []
+                    for lbl, pa, mk, gap in _so3_rows:
+                        _c = ("#B91C1C" if gap > 3 else
+                              "#047857" if gap < -3 else "#64748B")
+                        _bits.append(
+                            f"{lbl} path {pa:.2f} / mkt {mk:.2f} "
+                            f"<span style='color:{_c};font-weight:700'>"
+                            f"{gap:+.1f}bp</span>")
+                    st.markdown(
+                        "<div style='font-size:11px;color:#64748B;"
+                        "font-family:monospace;margin-top:4px'>3M check "
+                        "(SO3 frozen quote vs meeting path): "
+                        + " · ".join(_bits) + "</div>",
+                        unsafe_allow_html=True)
+                elif _so3.get("err"):
+                    st.caption(f"SO3 check unavailable — {_so3['err']}")
+    _asof_bits = []
+    for cb in _CB:
+        if "months" not in (data.get(cb) or {}):
+            continue
+        a = (data.get(cb) or {}).get("asof", "?")
+        try:      # older than the AVAILABLE dataset end = fixable staleness
+            if date.fromisoformat(str(a)) < _avail_end(_CB[cb]["ds"]):
+                a = f"{a} ⚠️stale"
+        except Exception:
+            pass
+        _asof_bits.append(f"{cb} {a}")
+    _asofs = " · ".join(_asof_bits)
     st.caption(
         f"Settles: **{_asofs}** — ZQ (CBOT Fed Funds, "
         "100 − monthly avg EFFR) and EON (ICE 1-Month €STR, 100 − monthly "
@@ -612,7 +804,14 @@ def render_meetings(host: str = "127.0.0.1", port: int = 7496):
         "Rate effective on decision day. **BoJ**: OSE 3M TONA quarterly settles via "
         "IBKR — quarterly compounded windows cannot uniquely pin each MPM, so "
         "meeting steps come from a ridge least-squares attribution and every "
-        "row is flagged ≈ (treat as indicative). Hikes red, cuts green "
+        "row is flagged ≈ (treat as indicative). The BoE **3M check** row "
+        "compares each fully-forward ICE SO3 quarterly (liquid, frozen IBKR "
+        "quote — may be fresher than the SOA settles) against the meeting "
+        "path's average over that window: a big gap flags the monthly strip "
+        "as off-market or stale. Hikes red, cuts green "
         "(>±2bp). Meeting dates verified against the Fed/ECB/BoJ calendars "
-        "through Dec-2027. Snapshot cached per day (~$0.01/refresh).")
+        "through Dec-2027. Snapshot cached per day (~$0.01/refresh); settles "
+        "run ~T−1 (availability read from free Databento metadata) — ⚠️stale "
+        "marks a leg older than the dataset's available end (auto-refetched "
+        "≤ every 2h); use ⚡ Live for current pricing after big moves.")
 

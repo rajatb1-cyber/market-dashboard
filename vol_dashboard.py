@@ -99,6 +99,8 @@ _PANELS = [
     ("Commodities",       "ATM IV · %/yr",          "v2",    "iv_pct",
      [("GC", "Gold (GC)"), ("BRN", "Brent (BRN)"),
       ("CL", "WTI (CL)"), ("SI", "Silver (SI)"), ("HG", "Copper (HG)")]),
+    ("Crypto",            "ATM IV · %/yr",          "v2",    "iv_pct",
+     [("BTC", "Bitcoin (MBT)")]),
 ]
 
 # Fail fast (at import) on any panel market missing from its source config —
@@ -1316,6 +1318,53 @@ def _bl_density_figure(bl: dict, label: str, tenor: str, src: str, mkt: str,
                                  line=dict(color="#0D9488", width=1.5, dash="dot"),
                                  name="symmetric normal @ F",
                                  hovertemplate="%{x:,.6~f}<extra></extra>"))
+    # Skewed split-normal from the ACTUAL smile (Rajat 2026-08-31: "green density
+    # from the actual skew"): half-widths from the fitted smile's IVs at this
+    # expiry's ±1σ ATM-ruler strikes — left σ from the below-F vol, right σ from
+    # the above-F vol — so the wing asymmetry is drawn explicitly next to the
+    # symmetric benchmarks. Same Jacobian treatment as the overlays above.
+    _skewn = None
+    try:
+        fk_n = np.asarray(bl.get("smile_fit_k") or [], dtype=float)
+        fiv_n = np.asarray(bl.get("smile_fit_iv") or [], dtype=float)
+        if _atm and _atm > 0 and len(fk_n) >= 3:
+            T_ = float(bl["T"])
+            F_n = float(bl["F"])
+            sT_ = math.sqrt(T_)
+            if bl["world"] == "Bachelier":
+                k_up, k_dn = F_n + _atm * sT_, F_n - _atm * sT_
+            else:
+                k_up, k_dn = F_n * math.exp(_atm * sT_), F_n * math.exp(-_atm * sT_)
+            iv_up = float(np.interp(k_up, fk_n, fiv_n))
+            iv_dn = float(np.interp(k_dn, fk_n, fiv_n))
+            if bl["world"] == "Bachelier":
+                s_up, s_dn = iv_up * sT_, iv_dn * sT_
+            else:
+                s_up, s_dn = F_n * iv_up * sT_, F_n * iv_dn * sT_
+            if min(s_up, s_dn) > 0:
+                if _yfns:
+                    k_nat2 = np.asarray(_y2p(xs_u))
+                elif _inv:
+                    k_nat2 = 1.0 / xs_u
+                else:
+                    k_nat2 = xs_u
+                A_ = 2.0 / (math.sqrt(2 * math.pi) * (s_dn + s_up))
+                pdf_n = np.where(k_nat2 < F_n,
+                                 A_ * np.exp(-((k_nat2 - F_n) ** 2) / (2 * s_dn ** 2)),
+                                 A_ * np.exp(-((k_nat2 - F_n) ** 2) / (2 * s_up ** 2)))
+                if _inv:
+                    _skewn = pdf_n * k_nat2 ** 2
+                elif _yfns:
+                    _skewn = pdf_n * np.abs(np.gradient(k_nat2, xs_u))
+                else:
+                    _skewn = pdf_n
+    except Exception:
+        _skewn = None
+    if _skewn is not None:
+        fig.add_trace(go.Scatter(x=xs_u, y=_skewn, mode="lines",
+                                 line=dict(color="#16A34A", width=1.5, dash="dash"),
+                                 name="skewed split-normal (±1σ smile vols)",
+                                 hovertemplate="%{x:,.6~f}<extra></extra>"))
     _und = bl.get("und_sym")
     fig.add_vline(x=F, line_color="#1E293B", line_width=1.5,
                   annotation_text=f"F {_xfmt(F)}" + (f" · {_und}" if _und else ""),
@@ -2153,6 +2202,34 @@ def _seven_point_figure(src: str, mkt: str, meas: str, label: str,
                                  line=dict(color="#0D9488", width=1.5, dash="dot"),
                                  name="symmetric normal @ F",
                                  hovertemplate="%{x:,.6~f}<extra></extra>"))
+    # Skewed split-normal from the tenor smile's ±1σ wing vols (Rajat 2026-08-31:
+    # "green density from the actual skew") — pts_v holds [ATM, +1σ, −1σ, ...];
+    # left half-width from the put wing, right from the call wing, reusing the
+    # bench overlay's k_nat grid and Jacobian so all overlays are comparable.
+    try:
+        cw1, pw1 = float(pts_v[1]), float(pts_v[2])
+        if world == "Bachelier":
+            s_up, s_dn = cw1 * sT, pw1 * sT
+        else:
+            s_up, s_dn = F * cw1 * sT, F * pw1 * sT
+        if min(s_up, s_dn) > 0:
+            A_ = 2.0 / (math.sqrt(2 * math.pi) * (s_dn + s_up))
+            pdf_n = np.where(k_nat < F,
+                             A_ * np.exp(-((k_nat - F) ** 2) / (2 * s_dn ** 2)),
+                             A_ * np.exp(-((k_nat - F) ** 2) / (2 * s_up ** 2)))
+            if _inv:
+                _skewn = pdf_n * k_nat ** 2
+            elif _yfns:
+                _skewn = pdf_n * np.abs(np.gradient(k_nat, xs_u))
+            else:
+                _skewn = pdf_n
+            fig.add_trace(go.Scatter(x=xs_u, y=_skewn, mode="lines",
+                                     line=dict(color="#16A34A", width=1.5,
+                                               dash="dash"),
+                                     name="skewed split-normal (±1σ wing vols)",
+                                     hovertemplate="%{x:,.6~f}<extra></extra>"))
+    except Exception:
+        pass
     _und = mkinfo.get("fut_sym")
     fig.add_vline(x=F_d, line_color="#1E293B", line_width=1.5,
                   annotation_text=f"F {_xfmt(F_d)}" + (f" · {_und}" if _und else ""),

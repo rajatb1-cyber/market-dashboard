@@ -44,6 +44,10 @@ _MULT = {
 }
 _EUR_CCY = {"ESTX", "DAX", "DU", "OE", "RX", "UX", "ER", "ER_1Y", "ER_2Y"}
 _GBP_CCY = {"SONIA", "SONIA_1Y", "SONIA_2Y"}
+# FX futures (CME 6x): mult is the FOREIGN-ccy contract size, so Δ×mult is a
+# foreign-notional (Rajat 2026-09-08: 6J delta "seems to be in Yen"). House
+# convention: FX Δ$ = USD-EQUIVALENT spot delta = Δ × size × F ($-per-unit).
+_FX_MKTS = {"EUR", "GBP", "JPY", "AUD", "CAD", "CHF", "MXN", "NZD"}
 
 
 # ── Live underlying (Rajat 2026-08-04: "1d-ago vol but LIVE future for pricing")
@@ -610,10 +614,14 @@ def price_structure(src: str, mkt: str, expiry: date, legs: list, lots: int,
     else:
         atm_disp = f"{atm_iv * 100:.2f}%"
     # $ delta: rates per 1bp YIELD move (Δ/pt × dv01 pts/bp — Rajat 2026-08-04),
+    # FX = USD-equivalent notional (Δ × ccy size × F — Rajat 2026-09-08),
     # everything else per 1.0 price point
     if src == "rates" and dv01:
         delta_usd = tot["delta"] * mult * lots * dv01
         delta_unit = "/bp"
+    elif mkt in _FX_MKTS:
+        delta_usd = tot["delta"] * mult * lots * F
+        delta_unit = ""
     else:
         delta_usd = tot["delta"] * mult * lots
         delta_unit = "/pt"
@@ -660,6 +668,8 @@ def price_future(src: str, mkt: str, lots: int, live: bool = True):
             dv01 = None
     if src == "rates" and dv01:
         delta_usd, unit = mult * lots * dv01, "/bp"
+    elif mkt in _FX_MKTS:
+        delta_usd, unit = mult * lots * F, ""
     else:
         delta_usd, unit = mult * lots, "/pt"
     return {"err": None, "F": F, "T": None, "r": None, "tdate": tdate,
@@ -1351,6 +1361,8 @@ def render_pricer():
                        if r.get("delta_unit", "/pt") == "/pt")
             d_bp = sum(r["delta_usd"] for r in ok
                        if r.get("delta_unit") == "/bp")
+            d_fx = sum(r["delta_usd"] for r in ok
+                       if r.get("delta_unit") == "")
 
             def _tc(lbl, v, sfx=""):
                 cls = " p" if v > 0 else (" n" if v < 0 else "")
@@ -1359,7 +1371,9 @@ def render_pricer():
             _tot = "<div class='tot'>" + _tc(
                 "net prem", sum(r["prem_usd"] for r in ok))
             if any(r.get("delta_unit", "/pt") == "/pt" for r in ok):
-                _tot += _tc("Δ eq/fx/cmd", d_pt, "/pt")
+                _tot += _tc("Δ eq/cmd", d_pt, "/pt")
+            if any(r.get("delta_unit") == "" for r in ok):
+                _tot += _tc("Δ fx $eq", d_fx)
             if any(r.get("delta_unit") == "/bp" for r in ok):
                 _tot += _tc("Δ rates", d_bp, "/bp")
             _tot += (_tc("θ /day", sum(r["theta_usd"] for r in ok))
@@ -1383,7 +1397,9 @@ def render_pricer():
             "Settlement smiles (spline per expiry, flat-extrapolated); v2 "
             "Black-76, rates Bachelier — per-leg IVs in [brackets]. F (live) "
             "= settlement forward shifted to the yahoo quote. Δ$ per 1.0pt "
-            "(rates per 1bp yield; futures lines = lots × multiplier); θ per "
+            "(rates per 1bp yield; FX = USD-EQUIVALENT notional, Δ × ccy "
+            "size × $ price — a plain $ figure, no /pt; futures lines = "
+            "lots × multiplier, FX × F); θ per "
             "calendar day; vega per 1pp IV; Δ totals kept in native units. "
             "European contracts (€/£) unconverted. ¢/100 = premium as a "
             "share of the structure's max settlement payoff (costs X to "

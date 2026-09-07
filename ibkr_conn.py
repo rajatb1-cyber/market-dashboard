@@ -376,7 +376,10 @@ def _quote_memo_key(c, mdtype):
             getattr(c, "lastTradeDateOrContractMonth", ""), getattr(c, "secType", ""), mdtype)
 
 
-def quotes(contracts, mdtype=3, settle_s=3.0, chunk=20, timeout_s=60, ibl=None, tag=""):
+def quotes(contracts, mdtype=2, settle_s=3.0, chunk=20, timeout_s=60, ibl=None, tag=""):
+    # default frozen(2), NOT delayed(3) — delayed-type requests are the prime
+    # suspect for TWS "subscribe"-prompt breakage (2026-08-31→09-02 incidents);
+    # every current caller passes mdtype explicitly, this guards future ones.
     """Snapshot-quote a list of ib_insync Contracts. Returns a list of Ticker
     objects parallel to the input (None where a contract failed).
 
