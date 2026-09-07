@@ -1485,9 +1485,9 @@ def render_pricer():
                           "the edit loop: ↺ Load, change lines, ⟳ Replace"):
             st.session_state["_pr_repl_confirm"] = _sets[pick]["name"]
         l6.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
-        if l6.button("🗑", key="_pr_ls_del", help="delete this portfolio"):
-            _ls_write([s for i, s in enumerate(_sets) if i != pick])
-            st.rerun()
+        if l6.button("🗑", key="_pr_ls_del",
+                     help="delete this portfolio (asks to confirm)"):
+            st.session_state["_pr_del_confirm"] = _sets[pick]["name"]
 
     # ── replace confirmation (destructive → explicit yes) ────────────────────
     _rc = st.session_state.get("_pr_repl_confirm")
@@ -1517,6 +1517,27 @@ def render_pricer():
                 st.rerun()
         if cc2.button("✕ Cancel", key="_pr_repl_no"):
             st.session_state.pop("_pr_repl_confirm", None)
+            st.rerun()
+
+    # ── delete confirmation (destructive → explicit yes, same pattern) ───────
+    _dc = st.session_state.get("_pr_del_confirm")
+    if _dc:
+        _dt = next((s for s in _ls_load() if s["name"] == _dc), None)
+        _dn = len(_dt["lines"]) if _dt else 0
+        st.warning(f"Delete portfolio **{_dc}** ({_dn} line(s))? "
+                   "This cannot be undone.")
+        dc1, dc2, _dcsp = st.columns([0.9, 0.6, 3.7])
+        if dc1.button("✓ Yes, delete", type="primary", key="_pr_del_yes"):
+            st.session_state.pop("_pr_del_confirm", None)
+            sets = _ls_load()
+            if not any(s["name"] == _dc for s in sets):
+                st.error(f"portfolio “{_dc}” no longer exists")
+            else:
+                _ls_write([s for s in sets if s["name"] != _dc])
+                st.toast(f"“{_dc}” deleted", icon="🗑️")
+                st.rerun()
+        if dc2.button("✕ Cancel", key="_pr_del_no"):
+            st.session_state.pop("_pr_del_confirm", None)
             st.rerun()
     # ── blotters (separate store: ad-hoc dated snapshots) ────────────────────
     _bls = _bl_load()
