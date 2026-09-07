@@ -1216,7 +1216,8 @@ def render_pricer():
         rows.append({
             "#": e["line"], "Market": e["mlbl"],
             "Expiry": ("—" if fut else
-                       f"{e['exp']}{' ≈' if r_.get('interp') else ''}"),
+                       f"{e['exp'].day} {e['exp'].strftime('%b %Y')}"
+                       f"{' ≈' if r_.get('interp') else ''}"),
             "Days": "—" if fut else (e["exp"] - date.today()).days,
             "Lots": e["lots"], "Structure": _stru,
             "Fwd": (f"{_vd._strike_fmt(r_['F'])}"
