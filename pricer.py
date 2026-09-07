@@ -685,15 +685,18 @@ def price_future(src: str, mkt: str, lots: int, live: bool = True):
 # USD-notional equivalent: P&L ≈ delta_usd × %ΔF. For display-inverted pairs
 # +1% USDJPY ≈ −1% 6J, so the per-1%-display value flips sign. ──────────────
 def _fx_delta_val(e: dict, r_: dict) -> float:
-    """$ P&L per +1% move of the DISPLAY pair."""
+    """USD-notional equivalent, signed in DISPLAY-pair direction
+    (+ on a USDJPY line = long dollars). Rajat 2026-09-07: 'i just want it
+    in notional' — delta_usd already IS Δ×F×mult×lots, only the sign needed
+    flipping for inverted pairs."""
     inv = f"v2:{e.get('mkt')}" in _vd._DISPLAY_INVERT
-    return (-1.0 if inv else 1.0) * r_["delta_usd"] / 100.0
+    return (-1.0 if inv else 1.0) * r_["delta_usd"]
 
 
 def _fx_delta_disp(e: dict, r_: dict) -> str:
     inv = f"v2:{e.get('mkt')}" in _vd._DISPLAY_INVERT
     pair = (f"USD{e.get('mkt')}" if inv else f"{e.get('mkt')}USD")
-    return f"{_fmt_money(_fx_delta_val(e, r_))}/1% {pair}↑"
+    return f"{_fmt_money(_fx_delta_val(e, r_))} ntl {pair}"
 
 
 # ── Cost per 100 of max payoff (Rajat 2026-09-03: JPY prem in ¢/yen is
@@ -1421,9 +1424,10 @@ def render_pricer():
             "Settlement smiles (spline per expiry, flat-extrapolated); v2 "
             "Black-76, rates Bachelier — per-leg IVs in [brackets]. F (live) "
             "= settlement forward shifted to the yahoo quote. Δ$ per 1.0pt "
-            "(rates per 1bp yield; FX = $ per +1% of the DISPLAY pair, sign "
-            "in display-pair direction — positive on a USDJPY line = long "
-            "dollars; futures lines = lots × multiplier, FX × F); θ per "
+            "(rates per 1bp yield; FX = signed USD NOTIONAL equivalent in "
+            "display-pair direction — positive on a USDJPY line = long "
+            "dollars, ≈ $ per 100% move; futures lines = lots × multiplier, "
+            "FX × F); θ per "
             "calendar day; vega per 1pp IV; Δ totals kept in native units. "
             "European contracts (€/£) unconverted. ¢/100 = premium as a "
             "share of the structure's max settlement payoff (costs X to "
