@@ -1557,8 +1557,29 @@ def render_pricer():
                 st.session_state["_pr_ls_msg"] = " · ".join(notes[:4])
             st.rerun()
         b3.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
-        if b3.button("🗑", key="_pr_bl_del", help="delete this blotter"):
-            _bl_write([s for i, s in enumerate(_bls) if i != bpick])
+        if b3.button("🗑", key="_pr_bl_del",
+                     help="delete this blotter (asks to confirm)"):
+            st.session_state["_pr_bldel_confirm"] = _bls[bpick]["name"]
+
+    # ── blotter delete confirmation (same yes/cancel pattern) ────────────────
+    _bdc = st.session_state.get("_pr_bldel_confirm")
+    if _bdc:
+        _bdt = next((s for s in _bl_load() if s["name"] == _bdc), None)
+        _bdn = len(_bdt["lines"]) if _bdt else 0
+        st.warning(f"Delete blotter **{_bdc}** ({_bdn} line(s))? "
+                   "This cannot be undone.")
+        bd1, bd2, _bdsp = st.columns([0.9, 0.6, 3.7])
+        if bd1.button("✓ Yes, delete", type="primary", key="_pr_bldel_yes"):
+            st.session_state.pop("_pr_bldel_confirm", None)
+            bls = _bl_load()
+            if not any(s["name"] == _bdc for s in bls):
+                st.error(f"blotter “{_bdc}” no longer exists")
+            else:
+                _bl_write([s for s in bls if s["name"] != _bdc])
+                st.toast(f"“{_bdc}” deleted", icon="🗑️")
+                st.rerun()
+        if bd2.button("✕ Cancel", key="_pr_bldel_no"):
+            st.session_state.pop("_pr_bldel_confirm", None)
             st.rerun()
 
     # ── scenario — runs on the ✓-ticked line (Rajat 2026-08-19: dropdown
