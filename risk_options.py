@@ -285,7 +285,25 @@ def _und_moves(o: dict):
             return None
         try:
             import yfinance as yf
-            h = yf.Ticker(tkr).history(period="10d", auto_adjust=True)["Close"]
+            h = yf.Ticker(tkr).history(period="10d", auto_adjust=True)["Close"].dropna()
+            # Yahoo's DAILY rollup freezes on US holidays — Labor Day
+            # 2026-09-07 served a Monday bar that was an exact Friday clone
+            # for 6J/ES while Globex traded a real (shortened) session, so
+            # every 1d Δ-est read $0. Overlay the intraday last as the live
+            # mark whenever it's available.
+            try:
+                li = yf.Ticker(tkr).history(period="1d",
+                                            interval="5m")["Close"].dropna()
+                if len(li) and len(h):
+                    _ld = li.index[-1].date()
+                    if h.index[-1].date() >= _ld:
+                        h.iloc[-1] = float(li.iloc[-1])
+                    else:
+                        h.loc[li.index[-1].tz_localize(None).normalize()
+                              if li.index[-1].tzinfo else li.index[-1]] = (
+                            float(li.iloc[-1]))
+            except Exception:
+                pass
             closes = [float(v) for v in h.values]
         except Exception:
             return None
