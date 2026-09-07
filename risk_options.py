@@ -286,22 +286,22 @@ def _und_moves(o: dict):
         try:
             import yfinance as yf
             h = yf.Ticker(tkr).history(period="10d", auto_adjust=True)["Close"].dropna()
-            # Yahoo's DAILY rollup freezes on US holidays — Labor Day
-            # 2026-09-07 served a Monday bar that was an exact Friday clone
-            # for 6J/ES while Globex traded a real (shortened) session, so
-            # every 1d Δ-est read $0. Overlay the intraday last as the live
-            # mark whenever it's available.
+            # Yahoo's HISTORY endpoints (daily AND intraday) freeze on US
+            # holidays — Labor Day 2026-09-07 served a Monday daily bar that
+            # was an exact Friday clone for 6J/ES and no Monday intraday at
+            # all, so every 1d Δ-est read $0. The QUOTE endpoint stays live
+            # (it's what the Pricer's live-shift uses) — overlay it as the
+            # mark: replace a today-dated stale bar, append if none.
             try:
-                li = yf.Ticker(tkr).history(period="1d",
-                                            interval="5m")["Close"].dropna()
-                if len(li) and len(h):
-                    _ld = li.index[-1].date()
-                    if h.index[-1].date() >= _ld:
-                        h.iloc[-1] = float(li.iloc[-1])
+                q = _pr._live_shift(o["mkt"])
+                if q and q[0] and len(h):
+                    _tdy = pd.Timestamp.today().normalize()
+                    _hlast = pd.Timestamp(h.index[-1]).tz_localize(None).normalize() \
+                        if h.index[-1].tzinfo else pd.Timestamp(h.index[-1]).normalize()
+                    if _hlast >= _tdy:
+                        h.iloc[-1] = float(q[0])
                     else:
-                        h.loc[li.index[-1].tz_localize(None).normalize()
-                              if li.index[-1].tzinfo else li.index[-1]] = (
-                            float(li.iloc[-1]))
+                        h.loc[h.index[-1] + pd.Timedelta(days=1)] = float(q[0])
             except Exception:
                 pass
             closes = [float(v) for v in h.values]
