@@ -23,6 +23,8 @@ pricer_portfolios.json
 risk_live_snapshot.json
 risk_prices.json
 risk_selection.json
+risk_events.json
+risk_scenarios.json
 flex_last_pull.json
 ibkr_budgets.json
 ibkr_pacing.json
