@@ -23,7 +23,7 @@ _FP = os.path.join(os.path.dirname(__file__), "event_calendar.json")
 
 _CAT_COL = {"US Data": "#2563EB", "FOMC": "#7C3AED", "Fed": "#7C3AED",
             "ECB": "#0D9488", "BoE": "#B45309", "BoJ": "#DC2626",
-            "JP Data": "#F43F5E", "Earnings": "#0EA5E9",
+            "JP Data": "#F43F5E", "UK Data": "#5F7A3E", "Earnings": "#0EA5E9",
             "Holiday": "#475569", "Other": "#64748B"}
 
 _TH = ("padding:4px 10px;font-size:11px;color:#64748B;text-align:left;"
