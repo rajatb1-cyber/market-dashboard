@@ -680,6 +680,24 @@ def price_future(src: str, mkt: str, lots: int, live: bool = True):
             "theta_usd": 0.0, "vega_usd": 0.0}
 
 
+# ── Native screen quote (Rajat 2026-09-08: "the exact price of the structure
+# — the price you would see while trading"). Per 1 lot, native units: CBOT
+# treasury options quote in points-and-64ths; everything else raw decimals. ──
+_64THS_MKTS = {"TU", "FV", "TY", "US", "UB"}
+
+
+def _native_px(e: dict, r_: dict) -> str:
+    p = r_["prem_pts"]
+    if e.get("src") == "rates" and e.get("mkt") in _64THS_MKTS:
+        neg = p < 0
+        whole, s64 = divmod(round(abs(p) * 64), 64)
+        return f"{'-' if neg else ''}{int(whole)}'{int(s64):02d}"
+    if abs(p) < 0.01:                      # FX natives (6J 0.0000578 style)
+        s = f"{p:.7f}".rstrip("0")
+        return s + "0" if s.endswith(".") else s
+    return f"{p:g}"
+
+
 # ── FX delta in DISPLAY-pair terms (Rajat 2026-09-07: "for USDJPY I want
 # this in terms of the actual USDJPY"). v2-FX delta_usd = Δ×F×mult×lots, a
 # USD-notional equivalent: P&L ≈ delta_usd × %ΔF. For display-inverted pairs
@@ -1267,6 +1285,7 @@ def render_pricer():
                      (f"{r_['prem_pts'] * 100:.4g}¢"
                       if e.get("cls") == "FX" or e.get("src") == "rates"
                       else f"{r_['prem_pts']:.4g}pt")),
+            "Px": "—" if fut else _native_px(e, r_),
             "Prem $": "—" if fut else _fmt_money(r_["prem_usd"]),
             # cost per 100 of max settlement payoff: a spread that pays 100
             # max and costs 28.9 shows 28.9 — unit-free odds read; "—" when
@@ -1311,7 +1330,7 @@ def render_pricer():
         import html as _hesc
         _COLS = ["#", "Market", "Expiry", "Days", "Lots", "Structure",
                  "Fwd", "Fwd yld", "K yld", "DV01", "Dur", "ATM",
-                 "Prem", "Prem $", "¢/100", "Prem $/√T", "Δ %", "Δ $",
+                 "Prem", "Px", "Prem $", "¢/100", "Prem $/√T", "Δ %", "Δ $",
                  "θ $/d", "Vega $"]
         _LEFT = {"Market", "Structure"}
         _css = (
@@ -1429,7 +1448,9 @@ def render_pricer():
             "dollars, ≈ $ per 100% move; futures lines = lots × multiplier, "
             "FX × F); θ per "
             "calendar day; vega per 1pp IV; Δ totals kept in native units. "
-            "European contracts (€/£) unconverted. ¢/100 = premium as a "
+            "European contracts (€/£) unconverted. Px = the native screen "
+            "quote per 1 lot (CBOT treasury options in pts'64ths; others raw "
+            "decimals) — what you'd type into the ticket. ¢/100 = premium as a "
             "share of the structure's max settlement payoff (costs X to "
             "make 100; — when unbounded). ≈ = surface-interpolated "
             "date. Lines reprice on every rerun — this is a live view.")
