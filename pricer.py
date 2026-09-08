@@ -555,10 +555,20 @@ def price_structure(src: str, mkt: str, expiry: date, legs: list, lots: int,
     F_set, is_live = F, False
     if live:
         q = _live_shift(mkt)
-        if q:
-            last, prev = q
-            F = F + (last - prev) if src == "rates" else F * (last / prev)
-            is_live = abs(F - F_set) > 1e-12
+        if q and surf:
+            last, _prev = q
+            # Anchor the shift on the SURFACE's own front-month settle, not
+            # Yahoo's previous_close: after the Labor-Day holiday the Sep-7
+            # settle surface met a Yahoo prev still stuck on Friday, so the
+            # ratio double-counted Monday's move (6J spread priced 0.0000034
+            # vs IBKR 0.0000080, F implied USDJPY 150.5 vs spot 154 —
+            # Rajat 2026-09-08). last / front-settle is date-consistent by
+            # construction.
+            F_front = float(surf[sorted(surf.keys())[0]]["F"])
+            if F_front:
+                F = (F + (last - F_front) if src == "rates"
+                     else F * (last / F_front))
+                is_live = abs(F - F_set) > 1e-12
 
     def _k_read(K):
         if not is_live:
@@ -654,8 +664,10 @@ def price_future(src: str, mkt: str, lots: int, live: bool = True):
     if live:
         q = _live_shift(mkt)
         if q:
-            last, prev = q
-            F = F + (last - prev) if src == "rates" else F * (last / prev)
+            last, _prev = q
+            # F here IS the front settle — anchor on it (see price_structure:
+            # Yahoo's prev_close can lag the surface trade date on holidays)
+            F = F + (last - F_set) if src == "rates" else float(last)
             is_live = abs(F - F_set) > 1e-12
     mult = _MULT.get(mkt, 1.0)
     dv01 = None
