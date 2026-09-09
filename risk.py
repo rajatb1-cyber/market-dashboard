@@ -1035,7 +1035,7 @@ def _options_box_html(opt_rows: list) -> str:
     header = (f"<tr><th style='{th_l}'>Option</th><th style='{th_l}'>Underlying</th>"
               f"<th style='{th}'>Strike</th><th style='{th}'>Expiry</th><th style='{th}'>Fut Level</th>"
               f"<th style='{th}'>Prem</th><th style='{th}'>Days to Exp (bus)</th>"
-              f"<th style='{th}'>Prem / √t</th></tr>")
+              f"<th style='{th}'>Prem / √t</th><th style='{th}'>θ $/day</th></tr>")
 
     def _sd(v, style=td):
         if v is None or (isinstance(v, float) and pd.isna(v)):
@@ -1058,10 +1058,11 @@ def _options_box_html(opt_rows: list) -> str:
                 f"font-weight:600'>{expy}</td>")
 
     body = ""
-    tot_prem, tot_pst = 0.0, 0.0
-    for name, und, strike, expy, lvl, prem, dte, pst in opt_rows:
+    tot_prem, tot_pst, tot_th = 0.0, 0.0, 0.0
+    for name, und, strike, expy, lvl, prem, dte, pst, theta in opt_rows:
         tot_prem += prem or 0.0
         tot_pst += pst or 0.0
+        tot_th += theta or 0.0
         strike_txt = f"{strike:g}" if (strike is not None and not (isinstance(strike, float) and pd.isna(strike))) else "—"
         lvl_txt = f"{lvl:,.3f}" if lvl is not None else "—"
         lvl_col = td if lvl is not None else f"{td};color:#64748B"
@@ -1071,14 +1072,15 @@ def _options_box_html(opt_rows: list) -> str:
                  f"<td style='{td}'>{strike_txt}</td>"
                  f"{_exp_cell(expy, dte)}"
                  f"<td style='{lvl_col}'>{lvl_txt}</td>"
-                 f"{_sd(prem)}<td style='{td}'>{dte_txt}</td>{_sd(pst)}</tr>")
+                 f"{_sd(prem)}<td style='{td}'>{dte_txt}</td>{_sd(pst)}"
+                 f"{_sd(theta)}</tr>")
 
     tf = ("font-size:11px;padding:5px 8px;border-top:2px solid #475569;"
           "text-align:right;font-weight:700")
     tf_l = tf.replace("text-align:right", "text-align:left")
     body += (f"<tr><td style='{tf_l}'>Total</td><td style='{tf_l}'></td><td style='{tf}'></td>"
              f"<td style='{tf}'></td><td style='{tf}'></td>{_sd(tot_prem, tf)}"
-             f"<td style='{tf}'></td>{_sd(tot_pst, tf)}</tr>")
+             f"<td style='{tf}'></td>{_sd(tot_pst, tf)}{_sd(tot_th, tf)}</tr>")
     return (f"<div style='overflow-x:auto'><table style='border-collapse:collapse;width:100%;"
             f"font-family:monospace'><thead>{header}</thead><tbody>{body}</tbody></table></div>")
 
@@ -2816,6 +2818,11 @@ def render_risk():
             _uroots = tuple(sorted({_root_of(str(r.get("Underlying") or ""))
                                     for _, r in _opts.iterrows()}))
             _ulvl = _underlying_levels(_uroots)
+            try:
+                import risk_options as _rop_g
+                _gmap = _rop_g.greeks_map(book, set(eff_fut))
+            except Exception:
+                _gmap = {}
             _orows = []
             for _, r in _opts.iterrows():
                 prem = float(r["position_value_base"])   # SIGNED: long +, short −
@@ -2831,7 +2838,9 @@ def render_risk():
                     _expv = str(int(_expv))          # int yyyymmdd → epoch bug
                 _exp = pd.to_datetime(_expv, errors="coerce")
                 expy = _exp.strftime("%d-%b-%y") if pd.notna(_exp) else "—"
-                _orows.append((r["Symbol"], und, strike, expy, lvl, prem, dte, pst))
+                _th = (_gmap.get(r["Symbol"]) or {}).get("theta")
+                _orows.append((r["Symbol"], und, strike, expy, lvl, prem, dte,
+                               pst, _th))
             # class+family order like the other position tables (Rajat
             # 2026-09-05; was soonest-expiry-first) — product via underlying
             _orows.sort(key=lambda x: _inst_sort_key(
@@ -2840,7 +2849,9 @@ def render_risk():
             st.caption("**Prem** & **Prem / √t** are **signed** (long +, short −); the **Total** row is the "
                        "net book premium.  ·  **Fut Level** = underlying future's ~live level (yfinance active "
                        "contract).  ·  **Days to Exp** = business/working days (Fri→Mon = 1).  ·  "
-                       "**Prem / √t** = premium ÷ √(business days).")
+                       "**Prem / √t** = premium ÷ √(business days).  ·  "
+                       "**θ $/day** = position daily decay off the settlement "
+                       "surfaces (long −, short +), live-shifted forward.")
 
     # ── Save Params (co-located with the editor) ─────────────────────────────
     if st.button("💾  Save Params", key="_risk_save_params",

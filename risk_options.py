@@ -361,6 +361,32 @@ def est_pnl(book: pd.DataFrame, sel: set | None = None, live: bool = True) -> di
     return out
 
 
+def greeks_map(book: pd.DataFrame, sel: set | None = None,
+               live: bool = True) -> dict:
+    """{symbol: {'theta': $/day, 'vega': $/1pp}} for the Options box (Rajat
+    2026-09-09: theta column). Position-level (signed by qty), priced off the
+    settlement surfaces like everything else; memoized ~2 min."""
+    import time as _t
+    now = _t.time()
+    ent = _PNL_MEMO.get("greeks_map")
+    if ent and now - ent[0] < _PNL_TTL_S:
+        return ent[1]
+    out = {}
+    opts, _notes = option_book(book, sel)
+    for o in opts:
+        try:
+            res = _greeks(o, live)
+            if res.get("err"):
+                continue
+            out[o["sym"]] = {"theta": float(res.get("theta_usd") or 0.0) * o["fxr"],
+                             "vega": float(res.get("vega_usd") or 0.0) * o["fxr"]}
+        except Exception:
+            continue
+    if out:
+        _PNL_MEMO["greeks_map"] = (now, out)
+    return out
+
+
 def compute(book: pd.DataFrame, mode: str, products: dict, ivols: dict,
             proxies: dict, fred_key=None, live: bool = True,
             sel: set | None = None) -> dict:
