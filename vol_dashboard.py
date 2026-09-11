@@ -45,10 +45,18 @@ _N_EXPIRIES = 16       # deep enough to reach ~6m even on markets with dense wee
 _CHG_HORIZONS = [("Δ1d", 1), ("Δ1w", 7), ("Δ1m", 30)]
 
 # Rough $ per market for one uncached settlement-day fetch (lo, hi). BRN's old $6.2
-# IFEU futures-statistics landmine was fixed at source 2026-07-29 (options_v2 now uses
-# ohlcv-1d first on ICE, ~$0.04) — BRN is just mildly pricier than CME markets now.
+# IFEU futures-statistics landmine was fixed at source 2026-07-29, but the OPTIONS
+# chain itself is still ICE-priced: BRN.OPT statistics $0.52 + definition $0.27 per
+# settlement day (metadata.get_cost, 2026-09-11) — ~30% of the whole Databento bill
+# for one market, vs $0.004–0.016 per CME root.
 _EST_COST_DEFAULT = (0.01, 0.03)
-_EST_COST_MKT = {"BRN": (0.05, 0.12)}
+_EST_COST_MKT = {"BRN": (0.75, 0.85)}
+
+# Markets EXCLUDED from the automatic daily load (Rajat 2026-09-11: "make it on
+# demand") — fetched only when the Vol Dash "include" checkbox is ticked for the
+# session. Their panel row stays visible, labelled "on demand", so the gap is explicit.
+_ON_DEMAND_MKTS = {"BRN"}
+_ON_DEMAND_KEY = "_vd_include_on_demand"
 
 # measure -> which expiry-curve row key feeds it, display scaling and decimals.
 #   iv_pct  : options_v2 Black-76 ATM IV (decimal)  -> %.
@@ -147,10 +155,17 @@ def _disp_fut_chg(src_key: str, pct):
 
 def _unique_loads() -> list:
     """De-duplicated [(source, mkt)] across all panels, in panel order — the two
-    rates panels collapse to one load per market."""
+    rates panels collapse to one load per market. On-demand markets are skipped
+    unless the session has opted in (see _ON_DEMAND_MKTS)."""
+    try:
+        include_od = bool(st.session_state.get(_ON_DEMAND_KEY, False))
+    except Exception:
+        include_od = False
     seen, out = set(), []
     for _t, _u, src, _meas, mkts in _PANELS:
         for k, _lbl in mkts:
+            if k in _ON_DEMAND_MKTS and not include_od:
+                continue
             if (src, k) not in seen:
                 seen.add((src, k))
                 out.append((src, k))
@@ -837,6 +852,9 @@ def _panel_html(title: str, unit: str, src: str, meas: str, mkts: list,
         skey = f"{mkt}:{meas}"
         s = build["series"].get(skey, {})
         mk = build["markets"].get(f"{rsrc}:{mkt}", {})
+        if mkt in _ON_DEMAND_MKTS and not mk:
+            label += (" <span style='font-weight:400;font-size:10px;"
+                      f"color:{_GREY}'>on demand — tick include above</span>")
         ch = changes.get((skey, tenor), {})
         vol = (s.get("vols") or {}).get(tenor)
         wc = (s.get("wcs") or {}).get(tenor)
@@ -2352,6 +2370,13 @@ def render_vol_dashboard():
         st.caption(f"⚠ vol indices table unavailable: "
                    f"{type(_ex).__name__} {str(_ex)[:80]}")
 
+    # On-demand markets (ICE-priced Brent) are off by default; ticking this adds them
+    # to the load set — before the load, or later in the session (the prefetch/build
+    # keys include the load-set size, so a newly added market is fetched on rerun).
+    _od_lbl = ", ".join(sorted(_ON_DEMAND_MKTS))
+    _od_lo, _od_hi = _est_fetch_cost([("v2", m) for m in _ON_DEMAND_MKTS])
+    st.checkbox(f"Include {_od_lbl} (ICE) — on demand, ~${_od_lo:.2f}–{_od_hi:.2f} per "
+                f"settlement day", key=_ON_DEMAND_KEY)
     loads = _unique_loads()
 
     # ── Smart load gate (house _vm_load_gate pattern) — data is NEVER fetched by
@@ -2513,6 +2538,8 @@ def render_vol_dashboard():
                 continue
             if _root3 in _seen_roots or (_s3, _k3) == (_sel_src, _sel_mkt):
                 continue
+            if _k3 in _ON_DEMAND_MKTS and f"{_s3}:{_k3}" not in build["markets"]:
+                continue   # not opted in this session — no background spend
             _seen_roots.add(_root3)
             _ctr3 = (build["markets"].get(f"{_s3}:{_k3}", {}) or {}).get("fut_sym") \
                 if _k3 in _MIDCURVE_UND else None
