@@ -720,7 +720,23 @@ def _chart_rows() -> dict:
     return rows
 
 
-def _chart_panel(sel):
+def _with_live(hist: list, live) -> tuple:
+    """Splice the board's live print onto the daily history so the chart ends
+    where the table's Last column reads (Rajat 2026-09-11: "the chart does
+    not show the live value"). live = (session_date, value in the history's
+    units) or None. A same-date history entry is REPLACED (CNBC daily bars
+    hold an earlier intraday print for today); a newer date is appended.
+    Returns (series, live_appended)."""
+    if not hist or not live or live[1] is None:
+        return hist, False
+    d, v = live
+    if d < hist[-1][0]:
+        return hist, False
+    base = hist[:-1] if d == hist[-1][0] else hist
+    return base + [(d, float(v))], True
+
+
+def _chart_panel(sel, live: dict | None = None):
     import plotly.graph_objects as go
     st.markdown("**📊 Quick charts**")
     tf = st.selectbox("Window", list(_CH_TF), index=2, key="_cm_ch_tf")
@@ -735,6 +751,7 @@ def _chart_panel(sel):
     if not hist:
         st.caption(f"⚠ {sel}: no history")
         return
+    hist, has_live = _with_live(hist, (live or {}).get(sel))
     w = [(d, v) for d, v in hist if d >= cutoff]
     if len(w) < 2:
         st.caption(f"⚠ {sel}: not enough data in window")
@@ -744,6 +761,11 @@ def _chart_panel(sel):
         x=[d for d, _v in w], y=[v for _d, v in w], mode="lines", name=sel,
         line=dict(color=col, width=3.5),
         hovertemplate="%{x|%d %b %y} · %{y:,.4g}<extra>" + sel + "</extra>"))
+    if has_live:          # the board's live print — marked so it reads as such
+        fig.add_trace(go.Scatter(
+            x=[w[-1][0]], y=[w[-1][1]], mode="markers", name="live",
+            marker=dict(color=col, size=9, line=dict(color="#FFFFFF", width=2)),
+            hovertemplate="live · %{y:,.4g}<extra>" + sel + "</extra>"))
     unit = {"px": "", "cnbc": "%", "sprd": "bp", "synth": ""}[kind]
     fig.update_layout(
         height=320, margin=dict(l=10, r=10, t=28, b=10), showlegend=False,
@@ -919,6 +941,7 @@ def render_core_markets():
 
     # pass 1 — build each row's html (with __BG__ placeholder) + σ ratios
     recs = []
+    live = {}        # {name: (session_date, live value in chart units)}
     for grp, name, tkr, kind in _SPEC:
         if _ensz_on:
             _ez_val, _ez_job = _ensz_lookup(kind, tkr)
@@ -947,6 +970,7 @@ def render_core_markets():
                 vol_s = f"{vol_d:.1f}bp" if vol_d else "—"
                 rsi14, rsi30 = _rsi_vals(hist, sess_d)
                 ts = pd.Timestamp(ts_iso) if ts_iso else None
+                live[name] = (sess_d, last)                 # %
         elif kind == "sprd":
             a, b = tkr.split("|")
             da_, db_ = ylds.get(a), ylds.get(b)
@@ -967,6 +991,7 @@ def render_core_markets():
                 rsi14, rsi30 = _rsi_vals(hist, sess_d)
                 _tt = [pd.Timestamp(t) for t in (tsa, tsb) if t]
                 ts = min(_tt) if _tt else None      # staler leg = honesty
+                live[name] = (sess_d, last * 100)           # bp
         elif kind == "synth":
             r = _bbdxy_live(px, fxpc)
             if r:
@@ -982,6 +1007,7 @@ def render_core_markets():
                 lvl = f"{last:,.1f}"
                 vol_s = f"{vol_d:.2f}%" if vol_d else "—"
                 rsi14, rsi30 = _rsi_vals(hist, sess_d)
+                live[name] = (sess_d, last)
         else:
             d = px.get(tkr)
             if d:
@@ -1026,6 +1052,9 @@ def render_core_markets():
                                                   False, pct, d3)
                 vol_s = f"{vol_d:.2f}%" if vol_d else "—"
                 rsi14, rsi30 = _rsi_vals(hist, ts.date())
+                # cash last on the cash-close history (not the off-hours
+                # future the Last cell may show — different basis)
+                live[name] = (ts.date(), last)
 
         if lvl is None:
             row = (f"<tr><td style='{_TD}'></td>"
@@ -1162,4 +1191,4 @@ def render_core_markets():
         sel = click_table(html, selected=st.session_state.get("_cm_tbl"),
                           key="_cm_tbl")
     with right:
-        _chart_panel(sel)
+        _chart_panel(sel, live)
