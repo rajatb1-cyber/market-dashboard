@@ -112,5 +112,7 @@ def render_panel() -> None:
     days = cost_by_day(14)
     if days:
         dtot = "  ·  ".join(f"{d[5:]}: ${u:.2f}" for d, u in days[:7])
-        st.caption(f"Daily totals: {dtot}. Normal full-day load ≈ $0.20-0.30; a spike means "
-                   f"an unusual query (full-venue scans are the budget killers).")
+        st.caption(f"Daily totals: {dtot}. Normal full-day load ≈ $0.60-0.90 (ICE is "
+                   f"~10× CME per byte — Brent options are on demand, ICE STIR settles "
+                   f"pull quarterlies only); a spike means an unusual query. Reconcile "
+                   f"against the Databento portal's usage page, which is the authority.")

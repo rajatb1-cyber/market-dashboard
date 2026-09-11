@@ -158,7 +158,10 @@ def fetch_strips() -> dict:
             tdate = _avail_end(cfg["ds"])
             df = None
             for _back in range(3):    # step back on the license's ~24h embargo
-                start = (tdate - timedelta(days=7)).isoformat()
+                # 2-day window, not 8: ICE bills the strip per day requested
+                # (EON/SOA statistics $0.15/$0.22 for 8d vs $0.03/$0.04 for 1d,
+                # 2026-09-11) and only the last settle per contract is used.
+                start = (tdate - timedelta(days=1)).isoformat()
                 end = (tdate + timedelta(days=1)).isoformat()
                 try:
                     cost = client.metadata.get_cost(
@@ -171,6 +174,12 @@ def fetch_strips() -> dict:
                         dataset=cfg["ds"], symbols=[cfg["parent"]],
                         stype_in="parent", schema=cfg["schema"], start=start,
                         end=end).to_df(map_symbols=True)
+                    try:
+                        from data_costs import record_cost
+                        record_cost(cfg["ds"], cfg["schema"], [cfg["parent"]],
+                                    float(cost))
+                    except Exception:
+                        pass
                     break
                 except Exception as _fe:
                     # any availability/licence-window error → step back a day

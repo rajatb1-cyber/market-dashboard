@@ -418,6 +418,29 @@ def _load_data(mkt_key: str, date_str: str, version: int = 1) -> dict:
     return _load_data_disk(mkt_key, date_str, version)
 
 
+_ICE_QUARTERLY_YEARS = 4   # option expiries ≤400d + 2y midcurve offset ⇒ <3.5y needed
+
+
+def _ice_quarterly_symbols(fut_sym: str, date_str: str,
+                           years: int = _ICE_QUARTERLY_YEARS) -> list:
+    """Raw ICE outright symbols for the quarterly futures from the current quarter out
+    `years` years — 'I   FMZ0026!' / 'SO3 FMH0027!' (root left-justified to 4 chars,
+    then FM<month>00<yy>!). These are the ONLY futures _get_fut_info_mm can ever match
+    (quarterly IMM rule), so the settle pull is restricted to them: ICE bills per
+    instrument-day and the parent symbol drags in ~470 calendar spreads/packs —
+    I.FUT $0.46 → 16 quarterlies $0.12 per day (measured 2026-09-11)."""
+    root = fut_sym.split(".")[0].ljust(4)
+    d = date.fromisoformat(date_str)
+    out = []
+    for yy in range(d.year, d.year + years + 1):
+        for mo in _QUARTERLY_MONTHS:
+            if (yy, mo) < (d.year, d.month) or (yy - d.year) * 12 + mo - d.month > years * 12:
+                continue
+            code = next(k for k, v in _MM_MONTH_CODES.items() if v == mo)
+            out.append(f"{root}FM{code}00{yy % 100:02d}!")   # ICE writes 2026 as 0026
+    return out
+
+
 def _fetch_fut_shared(client, ds: str, fut_sym: str, s: str, e: str, date_str: str) -> pd.DataFrame:
     """Futures settles for one root, fetched ONCE per (root, day) and shared across every
     market using that root (ER/ER_1Y/ER_2Y all need I.FUT — pre-2026-07-28 each paid for
@@ -425,8 +448,9 @@ def _fetch_fut_shared(client, ds: str, fut_sym: str, s: str, e: str, date_str: s
     EVERY contract daily, while ohlcv-1d only covers traded ones — untraded far-quarterly
     outrights (the midcurve underlyings!) go missing on quiet days, and ohlcv closes can
     differ from official settles by ~2.5bp (verified 2026-07-28). ohlcv-1d is fallback
-    only. Restricting statistics to outright symbols was probed and saves only 23% — not
-    worth it. Disk-cached per (root, dataset, day); empty results never persisted."""
+    only. On ICE the statistics pull is restricted to the quarterly outrights by raw
+    symbol (see _ice_quarterly_symbols; the parent pull stays as fallback). Disk-cached
+    per (root, dataset, day); empty results never persisted."""
     path = os.path.join(_DISK_CACHE_DIR, f"FUT_{fut_sym.replace('.', '_')}_"
                                          f"{ds.split('.')[0]}_{date_str}_v2.pkl")
     if os.path.exists(path):
@@ -439,7 +463,15 @@ def _fetch_fut_shared(client, ds: str, fut_sym: str, s: str, e: str, date_str: s
     df = pd.DataFrame()
     _SETTLE = 3
     try:
-        raw = _get_range(client, ds, [fut_sym], "statistics", s, e)
+        raw = None
+        if ds.startswith("IFLL"):
+            try:
+                raw = _get_range(client, ds, _ice_quarterly_symbols(fut_sym, date_str),
+                                 "statistics", s, e, stype_in="raw_symbol")
+            except Exception:
+                raw = None          # unresolved names etc. → parent pull below
+        if raw is None:
+            raw = _get_range(client, ds, [fut_sym], "statistics", s, e)
         d = raw.to_df().reset_index()
         d["stat_type"] = d["stat_type"].apply(int)
         settle = (d[d["stat_type"] == _SETTLE]
